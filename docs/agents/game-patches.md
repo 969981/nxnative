@@ -528,7 +528,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - frame step `+0x151d3d0`: VFR::updateInterval: its own override published for the host (state page target fps; 0 = original)
   - render scale stub (the launcher offers DM_RENDER_SCALE)
   - launcher capabilities: CAMERA_ASPECT
-  - host [loader.c:274](../../dm/host/loader.c#L274): build check
+  - host [loader.c:293](../../dm/host/loader.c#L293): build check
 
 ### The Legend of Zelda: Link's Awakening
 
@@ -568,7 +568,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
   - render scale stub (the launcher offers DM_RENDER_SCALE)
   - launcher capabilities: CAMERA_ASPECT
-  - host [loader.c:275](../../dm/host/loader.c#L275): build check
+  - host [loader.c:294](../../dm/host/loader.c#L294): build check
 
 ### Xenoblade Chronicles 3
 
