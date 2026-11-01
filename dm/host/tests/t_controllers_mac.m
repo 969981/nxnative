@@ -29,7 +29,8 @@ static io_service_t test_hid_service(IOHIDDeviceRef device) {
     return [((__bridge NSDictionary *)device)[@"registry"] unsignedIntValue];
 }
 static kern_return_t test_registry_id(io_registry_entry_t service,uint64_t *id) { *id=service; return KERN_SUCCESS; }
-static CFTypeRef test_registry_property(io_registry_entry_t service,const io_name_t plane,CFStringRef key,CFAllocatorRef allocator,IOOptionBits options) {
+// Keep the SDK ownership contracts when analysis does not inline these mocks.
+static CFTypeRef CF_RETURNS_RETAINED test_registry_property(io_registry_entry_t service,const io_name_t plane,CFStringRef key,CFAllocatorRef allocator,IOOptionBits options) {
     (void)plane; (void)key; (void)allocator; (void)options;
     id value=hid_registry[@(service)][@"interface"]; return value ? CFRetain((__bridge CFTypeRef)value) : NULL;
 }
@@ -73,7 +74,7 @@ static IOReturn test_hid_close(IOHIDDeviceRef device,IOOptionBits options) {
     [hid_opened removeObjectForKey:id]; hid_last_closed=device; ++hid_close_count;
     return kIOReturnSuccess;
 }
-static kern_return_t test_matching_services(mach_port_t port,CFDictionaryRef match,io_iterator_t *iterator) {
+static kern_return_t test_matching_services(mach_port_t port,CFDictionaryRef match CF_RELEASES_ARGUMENT,io_iterator_t *iterator) {
     (void)port; assert([((__bridge NSDictionary *)match)[@kIOHIDVendorIDKey] intValue]==0x28de);
     CFRelease(match); if(hid_scan_fails) return kIOReturnError;
     hid_scan=hid_registry.allKeys; hid_scan_index=0; *iterator=hid_scan_empty ? 0 : 100; return KERN_SUCCESS;
