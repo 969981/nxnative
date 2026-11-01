@@ -136,6 +136,7 @@ dm/host/input_map.h	present:*	the Mac front end's key and controller button map
 dm/host/input_preferences_mac.h	present:*	shared per-game control choices and launch overrides
 dm/host/controllers_mac.h	present:*	Mac controller lifecycle and mapping panel
 dm/host/pad_map.h	hle:*hid*	physical controller button mapping
+dm/host/pad_hid_mac.h	hle:*hid*	generic Mac HID ownership, lifecycle and input
 dm/host/pad_motion.h	hle:*SixAxisSensor*	Steam Controller motion history
 dm/host/steam_input.h	hle:*hid*	Steam Controller report decoding and trackpads
 dm/host/haptics_apple.h	hle:*Vibration*	Apple and direct controller rumble routes

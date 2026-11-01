@@ -13,6 +13,7 @@
 #include "input_preferences_mac.h"
 #include "steam_input.h"
 #include "pad_motion.h"
+#include "pad_hid_mac.h"
 #include <math.h>
 
 enum { PAD_OFF, PAD_DPAD, PAD_LEFT_STICK, PAD_RIGHT_STICK, PAD_TOUCH };
@@ -21,7 +22,8 @@ enum { PAD_OFF, PAD_DPAD, PAD_LEFT_STICK, PAD_RIGHT_STICK, PAD_TOUCH };
 @public
     int slot, map[DM_PAD_BUTTONS];
     steam_state input;
-    IOHIDDeviceRef device;
+    IOHIDDeviceRef device; // Triton only: proprietary output and feature reports
+    hid_pad *generic; // borrowed until hidpad_detach; never a Triton output route
     unsigned char report[512];
     BOOL feature_warning, rumble_warning, gyro_enabled, connected;
     uint64_t registry_id;
@@ -216,6 +218,13 @@ static steam_state controller_effective(DMController *d) {
     }
     return s;
 }
+// All adapters publish through this boundary, including shared remapping and
+// merged input. Preserve the upstream pointer threshold after normalization.
+static void controller_publish_player(int player, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    const int32_t dead=DM_STICK_MAX*15/100;
+    if(buttons || abs(lx)>dead || abs(ly)>dead || abs(rx)>dead || abs(ry)>dead) front_game_input();
+    dm_pad_set_player(player,buttons,lx,ly,rx,ry);
+}
 static void controller_publish(DMController *d) {
     if (g_merge) {
         uint64_t buttons = 0; int32_t lx=0, ly=0, rx=0, ry=0;
@@ -224,10 +233,10 @@ static void controller_publish(DMController *d) {
             buttons |= pad_map_buttons(s.buttons, pad->map);
             lx=stronger(lx,s.lx); ly=stronger(ly,s.ly); rx=stronger(rx,s.rx); ry=stronger(ry,s.ry);
         }
-        dm_pad_set_player(0, buttons, lx, ly, rx, ry);
+        controller_publish_player(0, buttons, lx, ly, rx, ry);
     } else if (d->slot >= 0) {
         steam_state s=controller_effective(d);
-        dm_pad_set_player(d->slot, pad_map_buttons(s.buttons, d->map), s.lx,s.ly,s.rx,s.ry);
+        controller_publish_player(d->slot, pad_map_buttons(s.buttons, d->map), s.lx,s.ly,s.rx,s.ry);
     }
     controller_touches();
 }
@@ -273,7 +282,10 @@ static void controller_update_focus(void) {
     } else if(!was_focused) {
         // Native buttons held through a focus change need no new physical
         // event. Only restore already admitted controllers, never cached peers.
-        for(DMController *d in g_devices) if(d.controller && d->slot>=0) { controller_attach_motion(d); controller_read_gc(d,[d.controller.input capture]); }
+        for(DMController *d in g_devices) if(d->slot>=0) {
+            if(d.controller) { controller_attach_motion(d); controller_read_gc(d,[d.controller.input capture]); }
+            else if(d->generic) hidpad_read(d->generic);
+        }
     }
 }
 void front_controllers_focus(int active) { g_app_focus=active; controller_update_focus(); }
@@ -301,6 +313,28 @@ static void controller_disconnect(DMController *d) {
     if (g_merge) controller_publish(d); else dm_pad_set_player(slot, 0, 0, 0, 0, 0);
     dm_pad_players(g_merge ? (pad_slot_mask(&g_slots) ? 1 : 0) : pad_slot_mask(&g_slots));
     controller_touches();
+    controller_panel_refresh();
+}
+// Generic HID uses the same registry, slot table and shared button map as GC
+// and Triton. Its decoder keeps physical state through focus changes.
+static DMController *controller_for_hid(hid_pad *hid) {
+    for(DMController *d in g_devices) if(d->generic==hid) return d;
+    return nil;
+}
+static void hidpad_read(hid_pad *hid) {
+    DMController *d=controller_for_hid(hid); if(!d) return;
+    int32_t s[4]; pad_hid_sticks(&hid->st,s);
+    d->input=(steam_state){.buttons=(uint32_t)pad_hid_buttons(&hid->st),.lx=s[0],.ly=s[1],.rx=s[2],.ry=s[3]};
+    controller_connect(d); controller_publish(d);
+}
+static void hidpad_attach(hid_pad *hid) {
+    DMController *d=[DMController new]; d->generic=hid;
+    d.name=@(hid->name); d.model=[@"HID / " stringByAppendingString:d.name];
+    controller_load_map(d); [g_devices addObject:d]; hidpad_read(hid);
+}
+static void hidpad_detach(hid_pad *hid) {
+    DMController *d=controller_for_hid(hid); if(!d) return;
+    controller_disconnect(d); d->generic=NULL; [g_devices removeObject:d];
     controller_panel_refresh();
 }
 static int32_t controller_axis(float v) { return (int32_t)(fmaxf(-1, fminf(1, v)) * DM_STICK_MAX); }
@@ -383,6 +417,7 @@ static void controllers_changed(GCController *gone) {
     steam_discover();
     NSMutableArray<GCController *> *now=[GCController.controllers mutableCopy]; if(gone) [now removeObject:gone];
     controllers_reconcile(now);
+    hidpad_retry();
 }
 
 // SDL's Triton protocol, using macOS IOHID directly: no external driver/library.
@@ -397,7 +432,7 @@ static IOHIDManagerRef g_hid;
     IOHIDDeviceRef device;
     uint64_t registry_id;
     int product;
-    BOOL protocol, native, opened;
+    BOOL protocol, native, gamepad, opened;
 }
 @property NSString *group;
 @property DMController *raw;
@@ -501,14 +536,21 @@ static DMSteamHID *steam_identify(IOHIDDeviceRef device, BOOL *complete) {
     CFTypeRef property=IORegistryEntrySearchCFProperty(IOHIDDeviceGetService(device),kIOServicePlane,CFSTR("bInterfaceNumber"),kCFAllocatorDefault,kIORegistryIterateRecursively|kIORegistryIterateParents);
     if(property) { if(CFGetTypeID(property)==CFNumberGetTypeID()) CFNumberGetValue(property,kCFNumberLongType,&interface); CFRelease(property); }
     long page=hid_number(device,CFSTR(kIOHIDPrimaryUsagePageKey)), usage=hid_number(device,CFSTR(kIOHIDPrimaryUsageKey));
-    if(page<0 || usage<0 || (interface<0 && (pid==0x1304 || pid==0x1305))) { *complete=NO; return nil; }
+    if(page<0 || usage<0) { *complete=NO; return nil; }
+    BOOL gamepad=page==kHIDPage_GenericDesktop && (usage==kHIDUsage_GD_GamePad || usage==kHIDUsage_GD_Joystick);
+    BOOL unknown_interface=interface<0 && (pid==0x1304 || pid==0x1305);
+    if(unknown_interface && !gamepad) { *complete=NO; return nil; }
     BOOL native=[GCController supportsHIDDevice:device];
-    BOOL protocol=steam_device(vid,pid,(int)interface) && steam_protocol(device,complete);
-    if(!protocol && !native) return nil;
+    BOOL report=steam_protocol(device,complete);
+    if(unknown_interface && report) { *complete=NO; return nil; }
+    BOOL protocol=steam_device(vid,pid,(int)interface) && report;
+    // An unsupported standard gamepad collection may be a sibling of the
+    // Triton protocol too: include it in the same ownership transaction.
+    if(!protocol && !native && !gamepad) return nil;
     DMSteamHID *hid=[DMSteamHID new]; hid->device=(IOHIDDeviceRef)CFRetain(device);
-    hid->registry_id=id; hid->product=pid; hid->protocol=protocol; hid->native=native;
-    hid.group=steam_group(device,pid,interface);
-    if(!hid.group) fprintf(stderr,"[RED] Steam Controller HID has no stable physical identity; retaining native input.\n");
+    hid->registry_id=id; hid->product=pid; hid->protocol=protocol; hid->native=native; hid->gamepad=gamepad;
+    hid.group=unknown_interface ? nil : steam_group(device,pid,interface);
+    if(!hid.group) fprintf(stderr,"[RED] Steam Controller HID has no stable physical identity; retaining fallback input.\n");
     return hid;
 }
 static void steam_close(DMSteamHID *hid) {
@@ -593,7 +635,7 @@ static BOOL steam_discover(void) {
     if(!complete) return NO; // no partial ownership transaction
     for(DMSteamHID *hid in found) g_steam_hids[@(hid->registry_id)]=hid;
     NSMutableSet *unknown=[NSMutableSet set];
-    for(DMSteamHID *hid in g_steam_hids.allValues) if(!hid.group && hid->native) [unknown addObject:@(hid->product)];
+    for(DMSteamHID *hid in g_steam_hids.allValues) if(!hid.group && (hid->native || hid->gamepad)) [unknown addObject:@(hid->product)];
     NSDictionary *groups=steam_groups();
     BOOL native_safe=YES;
     for(NSString *key in groups) {
@@ -608,6 +650,22 @@ static BOOL steam_discover(void) {
         } else steam_claim(key,group);
     }
     return native_safe;
+}
+// Called before generic HID opens a device. A late generic callback must not
+// pre-open a Triton sibling non-exclusively or create a second player for it.
+static int hidpad_available(IOHIDDeviceRef device) {
+    if(!g_hid) return 1; // explicit direct-HID opt-out retains generic fallback
+    long vid=hid_number(device,CFSTR(kIOHIDVendorIDKey)), pid=hid_number(device,CFSTR(kIOHIDProductIDKey));
+    if(vid!=0x28de || (pid!=0x1302 && pid!=0x1303 && pid!=0x1304 && pid!=0x1305)) return 1;
+    if(!steam_discover()) return 0;
+    BOOL complete=YES; DMSteamHID *hid=steam_identify(device,&complete);
+    if(!complete || !hid || hid->protocol) return 0;
+    if(!hid.group) return 1; // discovery already excluded conflicting raw owners
+    for(DMSteamHID *peer in g_steam_hids.allValues) if([peer.group isEqual:hid.group] && peer->opened) return 0;
+    // As for a native GC event, admitting fallback freezes this physical group
+    // until unplug. A protocol collection arriving later cannot steal it.
+    [g_steam_fallback addObject:hid.group];
+    return 1;
 }
 static void steam_added(void *context, IOReturn result, void *sender, IOHIDDeviceRef device) {
     (void)context; (void)sender; (void)device; if(result!=kIOReturnSuccess) return;
@@ -798,6 +856,7 @@ void front_controllers_start(void) {
     for (NSNotificationName name in @[GCControllerDidConnectNotification,GCControllerDidDisconnectNotification])
         [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { controllers_changed([n.name isEqual:GCControllerDidDisconnectNotification] ? n.object : nil); }];
     controllers_changed(nil);
+    hidpad_start();
     dm_motion_pro_start(controller_pro_changed);
     dm_motion_pro_active(g_focus);
     for(NSNotificationName name in @[NSApplicationDidResignActiveNotification,NSApplicationDidBecomeActiveNotification])

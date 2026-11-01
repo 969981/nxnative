@@ -39,6 +39,21 @@ disconnect releases all held input. The keyboard shares player 1 by default.
 `DM_KBD_PLAYER=own` reserves player 1 for the keyboard; `DM_PAD_MERGE=1` combines
 controllers into player 1. Two identical models may exchange slots on reconnect.
 
+## Generic HID gamepads
+
+A gamepad macOS pairs but GameController does not support (such as an 8BitDo
+in D-input mode) uses the generic HID reader. It shares the same player slots,
+button map and mapping panel with GameController and Triton; it does not use
+Triton's rumble or motion protocol. `DM_HID_MAP` maps device button usages to
+standard buttons first, then `DM_PAD_MAP` applies the game's shared choices.
+`DM_HID_LOG=1` logs button usages; `DM_HID_PADS=0` disables only this fallback.
+Buttons and sticks held through a focus change resume when the game regains
+focus. GameController-supported and synthetic devices are excluded.
+
+For shared ownership, incomplete device metadata and recovery after deferred
+admission, see [controller hotplug and fallback](reference/services.md#steam-controller-hotplug-interrupts-other-players).
+Physical device and hotplug retesting remain open.
+
 ## Steam Controller (2026)
 
 The Mac host includes a direct IOKit HID adapter for Valve's 2026 **Triton**
@@ -46,7 +61,8 @@ controller. It takes exclusive ownership of validated Triton HID interfaces for
 trackpads, motion and rumble, before registering native input. Matching native
 profile names is unnecessary: identical controllers and separate Puck
 interfaces keep their raw features. Empty Puck interfaces and cached native
-profiles never claim a player slot. Other controllers use Apple's GameController.
+profiles never claim a player slot. Other controllers use Apple's GameController
+or the generic HID fallback described below.
 
 The Triton adapter supports:
 

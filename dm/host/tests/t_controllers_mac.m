@@ -34,8 +34,8 @@ static CFTypeRef test_registry_property(io_registry_entry_t service,const io_nam
     id value=hid_registry[@(service)][@"interface"]; return value ? CFRetain((__bridge CFTypeRef)value) : NULL;
 }
 static IOReturn test_hid_open(IOHIDDeviceRef device,IOOptionBits options) {
-    assert(options==kIOHIDOptionsTypeSeizeDevice); ++hid_open_count;
     NSDictionary *properties=(__bridge NSDictionary *)device;
+    assert(options==kIOHIDOptionsTypeSeizeDevice || (options==kIOHIDOptionsTypeNone && [properties[@"generic"] boolValue])); ++hid_open_count;
     if([properties[@"fail"] boolValue]) return kIOReturnExclusiveAccess;
     assert(!hid_opened[properties[@"registry"]]); hid_opened[properties[@"registry"]]=properties;
     return kIOReturnSuccess;
@@ -47,6 +47,17 @@ static void test_hid_callback(IOHIDDeviceRef device,uint8_t *report,CFIndex size
     if(callback) { assert(context); hid_callbacks[id]=@YES; }
     else [hid_callbacks removeObjectForKey:id];
 }
+static void test_hid_value_callback(IOHIDDeviceRef device,IOHIDValueCallback callback,void *context) {
+    NSNumber *id=((__bridge NSDictionary *)device)[@"registry"]; assert(hid_opened[id]);
+    if(callback) { assert(context); hid_callbacks[id]=@YES; }
+    else [hid_callbacks removeObjectForKey:id];
+}
+static uint32_t test_element_page(IOHIDElementRef e) { return [((__bridge NSDictionary *)e)[@"page"] unsignedIntValue]; }
+static uint32_t test_element_usage(IOHIDElementRef e) { return [((__bridge NSDictionary *)e)[@"usage"] unsignedIntValue]; }
+static CFIndex test_element_min(IOHIDElementRef e) { return [((__bridge NSDictionary *)e)[@"min"] longValue]; }
+static CFIndex test_element_max(IOHIDElementRef e) { return [((__bridge NSDictionary *)e)[@"max"] longValue]; }
+static IOHIDElementRef test_value_element(IOHIDValueRef v) { return (__bridge IOHIDElementRef)((__bridge NSDictionary *)v)[@"element"]; }
+static CFIndex test_value_integer(IOHIDValueRef v) { return [((__bridge NSDictionary *)v)[@"value"] longValue]; }
 static void test_hid_schedule(IOHIDDeviceRef device,CFRunLoopRef loop,CFStringRef mode) {
     assert(loop==CFRunLoopGetMain() && CFEqual(mode,kCFRunLoopCommonModes));
     NSNumber *id=((__bridge NSDictionary *)device)[@"registry"]; assert(hid_opened[id] && hid_callbacks[id]); hid_scheduled[id]=@YES;
@@ -89,6 +100,13 @@ static kern_return_t test_object_release(io_object_t object) { (void)object; ret
 @end
 #define supportsHIDDevice testSupportsHIDDevice
 #define controllers testControllers
+#define IOHIDDeviceRegisterInputValueCallback test_hid_value_callback
+#define IOHIDElementGetUsagePage test_element_page
+#define IOHIDElementGetUsage test_element_usage
+#define IOHIDElementGetLogicalMin test_element_min
+#define IOHIDElementGetLogicalMax test_element_max
+#define IOHIDValueGetElement test_value_element
+#define IOHIDValueGetIntegerValue test_value_integer
 #define IOHIDDeviceCopyMatchingElements test_hid_elements
 #define IOHIDElementGetType test_element_type
 #define IOHIDElementGetReportID test_element_report
@@ -113,6 +131,8 @@ static kern_return_t test_object_release(io_object_t object) { (void)object; ret
 #define IOObjectConformsTo test_object_conforms
 #define IORegistryEntryGetParentEntry test_registry_parent
 #import "../controllers_mac.m"
+static unsigned pointer_activity;
+void front_game_input(void) { ++pointer_activity; }
 static uint64_t received[DM_PLAYERS]; static int32_t axes[DM_PLAYERS][4]; static uint32_t players;
 static GCController *rumble[DM_PLAYERS];
 static unsigned route_changes[DM_PLAYERS], pad_updates[DM_PLAYERS];
@@ -398,10 +418,12 @@ static void hid_fixture_finish(void) {
     native_devices=nil;
     for(NSDictionary *device in hid_registry.allValues.copy) {
         [hid_registry removeObjectForKey:device[@"registry"]];
+        hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)device);
         steam_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)device);
     }
     for(DMController *d in g_devices) controller_disconnect(d);
     g_devices=[NSMutableArray array]; g_slots=(pad_slots){0}; g_hid=NULL;
+    assert(!g_hidpads && (!g_hidpad_waiting || !CFArrayGetCount(g_hidpad_waiting)));
 }
 static void test_native_event_admission(BOOL composite) {
     hid_fixture_start();
@@ -630,6 +652,140 @@ static void test_shared_controls(void) {
     assert(CFPreferencesAppSynchronize((__bridge CFStringRef)domain));
     g_devices=[NSMutableArray array];
 }
+// The OS boundary supplies real decoder values; routing, mappings, focus and
+// mixed transport ownership are the production code above, with no device I/O.
+static NSDictionary *generic_device(int id) {
+    return @{@"registry":@(id), @"generic":@YES, @kIOHIDVendorIDKey:@PAD_HID_DEFAULT_VENDOR,
+        @kIOHIDProductIDKey:@1, @kIOHIDProductKey:@"8BitDo fixture",
+        @"elements":@[@{@"page":@1,@"usage":@0x30},@{@"page":@1,@"usage":@0x31}]};
+}
+static void generic_value(hid_pad *pad,int page,int usage,int value,int min,int max) {
+    NSDictionary *v=@{@"element":@{@"page":@(page),@"usage":@(usage),@"min":@(min),@"max":@(max)},@"value":@(value)};
+    hidpad_value(pad,kIOReturnSuccess,NULL,(__bridge IOHIDValueRef)v);
+}
+static void test_generic_hid_routing(void) {
+    for(int merged=0;merged<2;merged++) {
+        hid_fixture_start(); g_merge=merged; g_slots=(pad_slots){0};
+        static char keyboard; if(!merged) pad_slot_take(&g_slots,&keyboard,"keyboard");
+        NamedSteamController *native=[NamedSteamController new]; native_devices=@[native];
+        DMController *gc=controller_add_gc(native); [native.extendedGamepad.buttonA setValue:1];
+        unsigned activity=pointer_activity; gc_event(gc); assert(pointer_activity>activity);
+        int gcslot=gc->slot; assert(gcslot==(merged ? 0 : 1));
+        NSDictionary *props=generic_device(901); IOHIDDeviceRef hid=(__bridge IOHIDDeviceRef)props;
+        setenv("DM_HID_MAP","A=3",1); hidpad_found(NULL,kIOReturnSuccess,NULL,hid); unsetenv("DM_HID_MAP");
+        hid_pad *pad=g_hidpads; assert(pad && pad->hid==hid);
+        DMController *d=controller_for_hid(pad); assert(d && !d->device && !d.controller);
+        assert(d->slot==(merged ? 1 : 2) && gc->slot==gcslot && players==(merged ? 1u : 7u));
+        assert(pad->st.has[PH_X] && pad->st.has[PH_Y]);
+        assert(rumble[gcslot]==native && !raw_output[d->slot]);
+        CFIndex old_written=written_n; steam_keepalive(d); assert(written_n==old_written);
+        d->map[0]=3; // raw usage3 -> A, then shared A -> Y
+        int player=merged ? 0 : d->slot;
+        activity=pointer_activity; generic_value(pad,9,3,1,0,1);
+        assert(received[player]==(DM_BTN_Y | (merged ? DM_BTN_B : 0)) && pointer_activity>activity);
+        generic_value(pad,1,0x30,100,0,100); assert(axes[player][0]==DM_STICK_MAX);
+        front_controllers_window(0); assert(!received[player] && !axes[player][0]);
+        activity=pointer_activity; generic_value(pad,9,3,0,0,1); generic_value(pad,9,3,1,0,1);
+        assert(!received[player] && pointer_activity==activity);
+        front_controllers_window(1); assert(received[player]==(DM_BTN_Y | (merged ? DM_BTN_B : 0)) && axes[player][0]==DM_STICK_MAX);
+        hidpad_found(NULL,kIOReturnSuccess,NULL,hid); assert(g_hidpads==pad && !pad->next);
+        hidpad_removed(NULL,kIOReturnSuccess,NULL,hid);
+        assert(!g_hidpads && !d->generic && ![g_devices containsObject:d] && !hid_opened[@901]);
+        assert(received[player]==(merged ? DM_BTN_B : 0) && rumble[gcslot]==native);
+        hidpad_found(NULL,kIOReturnSuccess,NULL,hid); assert(controller_for_hid(g_hidpads)->slot==(merged ? 1 : 2));
+        controller_disconnect(gc); [g_devices removeObject:gc]; native_devices=@[];
+        activity=pointer_activity; generic_value(g_hidpads,1,0x30,51,0,100); assert(pointer_activity==activity); // drift
+        generic_value(g_hidpads,1,0x30,100,0,100); assert(pointer_activity>activity);
+        generic_value(g_hidpads,1,0x30,50,0,100);
+        hidpad_removed(NULL,kIOReturnSuccess,NULL,hid); assert(!received[player] && !hid_opened.count);
+        hid_fixture_finish(); g_merge=0;
+    }
+    puts("Generic HID mixed slots, remapping, focus, merged release and pointer activity: OK");
+}
+static void test_generic_hid_ownership(void) {
+    hid_fixture_start();
+    // Reject native/synthetic devices before opening, and leave no state on failure.
+    for(NSString *key in @[@"native",@kIOHIDGCSyntheticDeviceKey,@"fail"]) {
+        NSMutableDictionary *props=[generic_device(902) mutableCopy]; props[key]=@YES;
+        hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)props);
+        assert(!g_hidpads && !hid_opened.count && !g_devices.count);
+    }
+    // Callback order cannot let a generic sibling pre-open the raw group.
+    NSMutableDictionary *sibling=[hid_device(903,0x1302,0,1,5,NO) mutableCopy];
+    sibling[@"elements"]=@[]; sibling[@kIOHIDPhysicalDeviceUniqueIDKey]=@"mixed";
+    hid_registry[@903]=sibling;
+    NSMutableDictionary *protocol=[hid_device(904,0x1302,1,0xff00,1,NO) mutableCopy];
+    protocol[@kIOHIDPhysicalDeviceUniqueIDKey]=@"mixed"; hid_registry[@904]=protocol;
+    hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)sibling);
+    assert(!g_hidpads && hid_opened.count==2 && g_devices.count==1);
+    DMController *raw=g_devices.firstObject; assert(raw->device && !raw->generic);
+    raw->connected=YES; controllers_reconcile(@[]);
+    raw->input.buttons=DM_BTN_A; unsigned activity=pointer_activity; controller_publish(raw); assert(pointer_activity>activity);
+    hid_fixture_finish();
+    // Failed raw ownership permits an unsupported standard collection to work
+    // generically, and that admitted fallback cannot be seized by later scans.
+    hid_fixture_start();
+    sibling=[hid_device(905,0x1302,0,1,5,NO) mutableCopy];
+    sibling[@"elements"]=@[]; sibling[@"generic"]=@YES; sibling[@kIOHIDPhysicalDeviceUniqueIDKey]=@"fallback";
+    hid_registry[@905]=sibling;
+    protocol=[hid_device(906,0x1302,1,0xff00,1,YES) mutableCopy];
+    protocol[@kIOHIDPhysicalDeviceUniqueIDKey]=@"fallback"; hid_registry[@906]=protocol;
+    hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)sibling);
+    assert(g_hidpads && g_devices.count==1 && !g_devices.firstObject->device);
+    assert([g_steam_fallback containsObject:@"hid:4866:fallback:-1"]);
+    unsigned opened=hid_open_count;
+    protocol[@"fail"]=@NO; // permission becomes available, but no mid-play takeover
+    steam_discover(); assert((unsigned)hid_open_count==opened && g_devices.count==1);
+    hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)sibling); hid_fixture_finish();
+    hid_fixture_start();
+    setenv("DM_HID_PADS","0",1); hidpad_start(); unsetenv("DM_HID_PADS");
+    assert(!g_hidpad_manager && g_hid); // generic opt-out does not disable Triton
+    g_hid=NULL; // DM_STEAM_HID=0: generic gamepads remain independently available
+    NSDictionary *plain=generic_device(907);
+    hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)plain); assert(g_hidpads);
+    hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)plain); hid_fixture_finish();
+    puts("Generic HID GC/synthetic exclusions and Triton ownership coordination: OK");
+}
+static void test_generic_unknown_identity(void) {
+    for(int raw_first=0;raw_first<2;raw_first++) {
+        hid_fixture_start();
+        NSDictionary *raw=hid_device(908,0x1302,1,0xff00,1,NO);
+        if(raw_first) steam_discover(); else [hid_registry removeObjectForKey:@908];
+        NSMutableDictionary *unknown=[hid_device(909,0x1302,0,1,5,NO) mutableCopy];
+        unknown[@"elements"]=@[]; unknown[@"generic"]=@YES;
+        [unknown removeObjectForKey:@kIOHIDPhysicalDeviceUniqueIDKey]; hid_registry[@909]=unknown;
+        hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)unknown);
+        if(raw_first) {
+            assert(!g_hidpads && g_devices.count==1 && g_devices.firstObject->device);
+            [hid_registry removeObjectForKey:@908];
+            steam_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)raw);
+            assert(g_hidpads && g_devices.count==1 && !g_devices.firstObject->device);
+            hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)unknown);
+        } else {
+            assert(g_hidpads && g_devices.count==1 && !g_devices.firstObject->device);
+            hid_registry[@908]=raw; steam_discover();
+            assert(hid_opened.count==1 && !g_devices.firstObject->device);
+            hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)unknown);
+        }
+        hid_fixture_finish();
+    }
+    // Incomplete registry scans defer input without losing the matching event.
+    hid_fixture_start();
+    NSMutableDictionary *deferred=[hid_device(910,0x1302,0,1,5,NO) mutableCopy];
+    deferred[@"elements"]=@[]; deferred[@"generic"]=@YES; hid_registry[@910]=deferred;
+    hid_scan_fails=YES; hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)deferred);
+    assert(!g_hidpads); hid_scan_fails=NO; controllers_changed(nil); assert(g_hidpads);
+    hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)deferred); hid_fixture_finish();
+    // Puck interface metadata is optional for a standard nonprotocol gamepad;
+    // without it no physical port may be guessed for a raw ownership claim.
+    hid_fixture_start();
+    NSMutableDictionary *puck=[hid_device(911,0x1304,-1,1,5,NO) mutableCopy];
+    puck[@"elements"]=@[]; puck[@"generic"]=@YES; hid_registry[@911]=puck;
+    hidpad_found(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)puck);
+    assert(g_hidpads && g_devices.count==1 && !g_devices.firstObject->device);
+    hidpad_removed(NULL,kIOReturnSuccess,NULL,(__bridge IOHIDDeviceRef)puck); hid_fixture_finish();
+    puts("Generic HID missing identity and deferred admission recover without duplicate raw routes: OK");
+}
 int main(int argc, char **argv) {
     @autoreleasepool {
         g_devices = [NSMutableArray array]; g_maps = [NSMutableDictionary dictionary];
@@ -653,6 +809,9 @@ int main(int argc, char **argv) {
         test_unknown_hid_identity(YES);
         test_incomplete_discovery();
         test_merged_hotplug();
+        test_generic_hid_routing();
+        test_generic_hid_ownership();
+        test_generic_unknown_identity();
         test_shared_controls();
         NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
         [NSFileManager.defaultManager createDirectoryAtPath:tmp withIntermediateDirectories:YES attributes:nil error:nil];

@@ -351,7 +351,7 @@ $(B)/t_pad_motion: t_pad_motion.c ../pad_motion.h ../dm_input.h | $(B)
 run: $(B)/t_pad_map $(B)/t_input_map
 $(B)/t_pad_map: t_pad_map.c ../pad_map.h ../steam_input.h ../dm_input.h | $(B)
 	$(CLANG) -O1 -Wall -Werror -o $@ t_pad_map.c
-$(B)/t_controllers_mac: t_controllers_mac.m ../pad_apple.h ../input_map.h ../input_preferences_mac.h ../controllers_mac.m ../controllers_mac.h ../pad_map.h ../pad_motion.h ../steam_input.h ../pad_slots.h ../front.h ../dm_input.h ../haptics_apple.h ../hle_haptics.h ../dm.h ../motion_apple.h ../motion_pro_mac.h ../motion_pro.h $(GAME_H) | $(B)
+$(B)/t_controllers_mac: t_controllers_mac.m ../pad_hid.h ../pad_hid_mac.h ../pad_apple.h ../input_map.h ../input_preferences_mac.h ../controllers_mac.m ../controllers_mac.h ../pad_map.h ../pad_motion.h ../steam_input.h ../pad_slots.h ../front.h ../dm_input.h ../haptics_apple.h ../hle_haptics.h ../dm.h ../motion_apple.h ../motion_pro_mac.h ../motion_pro.h $(GAME_H) | $(B)
 	$(CLANG) $(GINC) -O1 -fobjc-arc -Wall -Werror -Wno-unused-function -o $@ t_controllers_mac.m -framework Cocoa -framework GameController -framework IOKit
 
 $(B)/t_input_map: t_input_map.c ../input_map.h ../dm_input.h | $(B)

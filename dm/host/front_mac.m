@@ -100,7 +100,7 @@ void front_screen_match(int fps) {
 }
 // The pointer hides on game input while it is over the picture of the active game window (issue #675): AppKit shows it again when the mouse moves, input_release when
 // the window loses focus. The title bar, other windows and other apps keep theirs; the mouse is the touch screen (DmGameView), and moving it shows the pointer
-static void cursor_hide_for_input(void) {
+void front_game_input(void) {
     if (!g_win.isKeyWindow || !NSApp.isActive) return;
     NSView *v = g_win.contentView;
     if (NSPointInRect([v convertPoint:g_win.mouseLocationOutsideOfEventStream fromView:nil], v.bounds)) [NSCursor setHiddenUntilMouseMoves:YES];
@@ -116,7 +116,7 @@ static void on_key(NSEvent *e, int down) {
     int f=key_map_fn(&g_keys,e.keyCode); if(f<0) return;
     g_held_fn=key_state_event(&g_key_state, &g_keys, e.keyCode, down, (e.modifierFlags & NSEventModifierFlagShift) != 0);
     g_btn=(g_held_fn & 0xffff) | (g_held_fn >> IM_SHAKE & 1 ? DM_BTN_SHAKE : 0);
-    if(down) cursor_hide_for_input(); // every key mapped to a game function
+    if(down) front_game_input(); // every key mapped to a game function
     push();
 }
 

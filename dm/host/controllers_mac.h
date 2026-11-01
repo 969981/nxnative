@@ -9,3 +9,6 @@ void front_controllers_mouse(const dm_touch *touch);
 void front_controllers_focus(int active);
 void front_controllers_modal(int active);
 void front_controllers_window(int active);
+
+// Called on the main thread when mapped input reaches the game.
+void front_game_input(void);
