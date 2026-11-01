@@ -9123,6 +9123,7 @@ static int fb_mode(void) {
         if (g_fb_mode != 1) MLOG("same-pass feedback sampling snapshot: %s (DM_NVN_FB_SNAP)", g_fb_mode ? "a fresh one for every draw sampling an attachment of its pass" : "off"); }
     return g_fb_mode;
 }
+static int fb_depth_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_FB_DEPTH"); v = !(e && !strcmp(e, "0")); } return v; }   // DM_NVN_FB_DEPTH=0: a draw samples its own depth attachment directly
 static inline void fb_pass_sync(void) { uint64_t p = g_stat_pass + !g_enc; if (p != g_fb_pass) { g_fb_pass = p; g_fb_wmask = g_fb_rmask = 0; } }
 // The snapshot of an attachment's level and layer: the cached one (valid: *fresh = 0) or a texture to copy into (*fresh = 1; the entry is then valid from this barrier and submission on)
 static fb_cache_t *fb_snap(uint64_t ser, int lv, int sl, MTLPixelFormat pf, NSUInteger w, NSUInteger h, int force, int *fresh) {
@@ -9199,7 +9200,28 @@ static void fb_prepare(NvProg *pr) {
                 MLOG("same-pass feedback sampling: snapshot #%llu, %llu draws reused one, %llu passes ended before a write to an attachment read directly (frame %llu pass %llu, shader %s slot %d samples attachment %d ser=%llu %lux%lu format %lu)", (unsigned long long)g_fb_count, (unsigned long long)g_fb_reuse, (unsigned long long)g_fb_split,
                      (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass + !g_enc, fs->key, b->reg, k, (unsigned long long)ser, (unsigned long)w, (unsigned long)h, (unsigned long)base.pixelFormat);
             PD("N %llu same-pass feedback sampling: attachment %d ser=%llu level %d layer %d copied into a snapshot; this draw samples the snapshot", g_stat_pass + !g_enc, k, (unsigned long long)ser, lv, sl);
-        } }
+        }
+        // The depth buffer of the draw's own pass, sampled (Donkey Kong Country: Tropical Freeze: 976bc74475e9443b, dbd64ad1611ed4c9 on its 1920x1080 Depth32Float): with Apple's lossless compression the read gives wrong
+        // values in whole tiles, background rectangles flickering from frame to frame (#676), even when the pass does not write depth. Without compression the read is right, at about 10% of the frame rate on that game. So it reads a copy
+        if (R.rt.depth && R.rt.depth->serial == ser && g_fb_n < 4 && fb_depth_on()) {
+            uint64_t aser; int lv, sl; rt_sub(&R.rt, 8, &aser, &lv, &sl);
+            os_unfair_lock_lock(&g_rmu); void *tv = NULL; tex_fast_rid(tid, &tv); id<MTLTexture> t = (__bridge id<MTLTexture>)tv; os_unfair_lock_unlock(&g_rmu);
+            if (!t || t.textureType != MTLTextureType2D || t.sampleCount != 1 || t.mipmapLevelCount != 1 || lv || sl || b->dtt != MTLTextureType2D) continue;
+            id<MTLTexture> dbase = t.parentTexture ? t.parentTexture : t;   // Breath of the Wild samples it through a swizzled view: the same view of the copy
+            if (dbase.parentTexture || dbase.mipmapLevelCount != 1 || dbase.textureType != MTLTextureType2D || (t.parentTexture && (t.parentRelativeLevel || t.parentRelativeSlice))) continue;
+            int dup = 0; for (int q = 0; q < g_fb_n; q++) dup |= g_fb_src[q] == t; if (dup) continue;
+            int fresh; fb_cache_t *e = fb_snap(ser, 0, 0, t.pixelFormat, t.width, t.height, 0, &fresh); if (!e) continue;
+            if (fresh) { if (g_enc) rp_end(); id<MTL4ComputeCommandEncoder> be = blit(); enc_b_copy_texture(be, dbase, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(t.width, t.height, 1), e->snap, 0, 0, MTLOriginMake(0, 0, 0)); }
+            if (!g_enc) fb_pass_sync();
+            MTLTextureSwizzleChannels sw = t.swizzle;
+            int same = sw.red == MTLTextureSwizzleRed && sw.green == MTLTextureSwizzleGreen && sw.blue == MTLTextureSwizzleBlue && sw.alpha == MTLTextureSwizzleAlpha;
+            id<MTLTexture> use = same ? e->snap : [e->snap newTextureViewWithPixelFormat:t.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(0, 1) slices:NSMakeRange(0, 1) swizzle:sw];
+            if (!use) continue;
+            if (g_fb_use[g_fb_n] && g_fb_use[g_fb_n] != use) defer_obj_unref(g_fb_use[g_fb_n]);
+            g_fb_src[g_fb_n] = t; g_fb_use[g_fb_n] = use; g_fb_rid[g_fb_n] = use.gpuResourceID._impl; g_fb_n++;
+            static uint64_t nd; if (fresh && (++nd == 1 || nd == 1000 || nd % 100000 == 0)) MLOG("same-pass depth sampling: snapshot #%llu (frame %llu, shader %s slot %d, ser=%llu %lux%lu format %lu)", (unsigned long long)nd, (unsigned long long)atomic_load(&g_cur_frame), fs->key, b->reg, (unsigned long long)ser, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat);
+        }
+    }
     g_fb_wmask |= wm;
     if (g_fb_n) { g_fb_seq = g_draw_seq; args_dirty_all(); g_fb_rebind = 1; }
 }
