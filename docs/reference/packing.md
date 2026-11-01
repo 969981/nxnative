@@ -110,6 +110,13 @@
 - **Fix:** the three take only the names the shader build writes, `<16 hex key>_b….metal` / `.json` as `dmsh_build.py` (`OUT_KEY`) and `regress.py` already did: `c1_guard.py` `outputs` (which `cb_extent.py` uses too) and `dmsh_mtlcache.py` `OUTPUT`. None of them is part of the chain version. `dm/tools/tests/test_nsp_chain.py` runs both table tools on a folder with `._` files; the old `c1_guard.py` stops on it. On 13 Sentinels' 751 shaders both tables are unchanged.
 - **Found on:** a user's iOS shader build on an external drive ([PR #555](https://github.com/seedds/nxnative/pull/555)). Applies to every NVN game.
 
+### External shader directories contain AppleDouble metadata
+
+- **Symptom:** on an exFAT or FAT drive, shader splitting stops with `ValueError: not a version 2 shader code archive` or `[RED] /glslc_capture/._…: no GLSLC output`.
+- **Cause:** `shader_split.py` selected captured `.glslc` programs and decoded `.ushaderbytecode` archives by extension alone. macOS AppleDouble sidecars retain that extension, but their `._<name>` files contain metadata rather than shader bytes.
+- **Fix:** exclude `._` names when listing both external shader directories, including `DM_GLSLC_CAPTURE` and `DM_UE_SHADERS` overrides. Other dot-prefixed names remain valid inputs, and malformed real inputs still fail their normal validation. The synthetic `test_split_appledouble.py` runs the complete splitter with generated NSO headers and shaders: adding sidecars leaves every output byte unchanged.
+- **Found on:** an external-drive build reported in [issue #229's follow-up](https://github.com/seedds/nxnative/issues/229#issuecomment-6563450365). That commenter used a different, unnamed game; this fixes the sidecar failure, not the original Metroid Prime 4 port. No game rebuild was performed for this change.
+
 ## Compressed inputs
 
 ### NSZ decompression rejects `--keys`
