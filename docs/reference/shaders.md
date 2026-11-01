@@ -4,6 +4,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ## Containers by engine
 
+### Main and archive discovery delay independent shader scans
+
+- **Symptom:** a first shader split completes all executable scans and archive preparation before scanning resources, then waits for every archive range before submitting loose files.
+- **Cause:** serial preparation and separate pool submissions create barriers between otherwise independent scans. LINKDATA indexes were also parsed again merely to exclude their files from the loose-file list.
+- **Fix:** `shader_split.py` scans executable versions in one process-pool task while another prepares archive ranges, then submits archive ranges and loose-file batches together to the same pool. Executables stay serial within their task to bound full-image memory. The first executable's Unity strings and the zstd dictionaries are loaded before worker initialization; executable scans temporarily use their original context and restore the worker context afterward. Results retain executable, archive and loose-file precedence, including Unity's deferred second pass. LINKDATA discovery is reused for exclusion.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements). Scheduling tests force overlap and verify order, progress and error propagation; the game benchmark compares every generated package and table.
+
 ### Sumo Ninty_NX shaders and MuxFDMR streams
 
 - **Symptom:** the split finds no shaders in `main` or RomFS, while reporting control sections in `main` with no code area. The game has `.sp4` resources and loose `.nvnbin` files rather than BNSH archives or whole GLSLC outputs.

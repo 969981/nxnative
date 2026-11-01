@@ -31,7 +31,9 @@ class Base(unittest.TestCase):
         tool = Path(cmd[1]).name
         if tool in ('vk_shaders.py', 'gl_shaders.py'):
             api, a = tool[:2], [str(c) for c in cmd]
-            outs = [Path(a[a.index('--ios') - 1]), Path(a[a.index('--ios') + 1])] if '--ios' in a else [Path(a[-1])]
+            targets = a[a.index('--targets') + 1].split(',') if '--targets' in a else ['mac', 'ios'] if '--ios' in a else ['mac']
+            out = Path(a[a.index('--ios') - 1]) if '--ios' in a else Path(a[a.index('--targets') - 1]) if '--targets' in a else Path(a[-1])
+            outs = ([out] if 'mac' in targets else []) + ([Path(a[a.index('--ios') + 1])] if 'ios' in targets else [])
             for o in outs: (o / api).mkdir(parents=True, exist_ok=True); (o / api / f'{api}_shaders.metallib').write_bytes(b'lib')
             log.write_text('macosx: 3 shaders\n' + ('iphoneos: 3 shaders\n' if '--ios' in a else ''))
         elif tool == 'own_compilers.py':   # a full dmsh_build.py run: the libraries, their stamp, and the profile's tables naming it
@@ -58,10 +60,11 @@ class Layer(Base):
         self.assertTrue((self.sh / 'vk.key').is_file()); self.assertFalse((self.sh / 'ios/vk.key').exists())
         self.assertEqual(self.vk(True), self.sh); self.assertEqual(self.ran, [])   # reused
 
-    def test_mac_after_ios(self):   # an iOS build makes the Mac library too: a Mac-only build is reused
+    def test_mac_after_ios(self):   # an iOS-only build supplies no Mac library or key
         self.assertEqual(self.vk(False), self.sh / 'ios')
-        self.assertIn('--ios', self.ran[0][0])
-        (self.sh / 'vk.key').unlink()   # an iOS build from before Mac-only builds wrote only its own key
+        self.assertFalse((self.sh / 'vk.key').exists())
+        self.assertFalse((self.sh / 'vk/vk_shaders.metallib').exists())
+        self.assertEqual(self.vk(True), self.sh); self.assertEqual(len(self.ran), 1)
         self.assertEqual(self.vk(True), self.sh); self.assertEqual(self.ran, [])
 
     def test_ios_after_mac(self):   # a Mac-only build made no iPhone library: an iOS build runs
@@ -73,7 +76,25 @@ class Layer(Base):
         self.vk(False)
         self.vk(True, 'K2'); self.assertEqual(len(self.ran), 1)
         self.assertTrue((self.sh / 'ios/vk/vk_shaders.metallib').is_file())   # the iPhone library stays, under its own (older) key
-        self.assertEqual(nsp.reused(self.sh / 'ios/vk.key', 'K'), '3 shaders for the Mac and iOS')
+        self.assertEqual(nsp.reused(self.sh / 'ios/vk.key', 'K'), '3 shaders for iOS')
+
+    def test_ios_keeps_existing_mac_output_and_key(self):
+        self.vk(True)
+        lib = self.sh / 'vk/vk_shaders.metallib'; lib.write_bytes(b'previous Mac library')
+        key = (self.sh / 'vk.key').read_bytes()
+        self.vk(False, 'K2')
+        self.assertEqual(lib.read_bytes(), b'previous Mac library')
+        self.assertEqual((self.sh / 'vk.key').read_bytes(), key)
+        self.vk(True, 'K2'); self.assertEqual(len(self.ran), 1)   # old Mac key cannot reuse changed inputs
+
+    def test_failure_keeps_other_target(self):
+        self.vk(True)
+        lib = self.sh / 'vk/vk_shaders.metallib'; before = lib.read_bytes()
+        with mock.patch.object(nsp, 'run', side_effect=nsp.BuildError('compiler failed')):
+            with self.assertRaisesRegex(nsp.BuildError, 'compiler failed'): self.vk(False)
+        self.assertEqual(lib.read_bytes(), before)
+        self.assertTrue((self.sh / 'vk.key').exists()); self.assertFalse((self.sh / 'ios/vk.key').exists())
+
 
 
 class Nvn(Base):

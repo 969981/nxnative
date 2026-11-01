@@ -16,6 +16,20 @@
 - **Fix:** the NSP script checks the environment before extracting anything: `check_native_python` stops under Rosetta (`sysctl.proc_translated`), and `check_prereqs` starts the translator once with `--source-sha` and stops with its first message line (`check_translator`). It also checks glslang and, for an iPhone build, the iOS SDK (`check_ios_sdk`, before the Metal check, whose message would blame the Metal toolchain). `own_compilers.py` no longer asks a Mac-only shader build (`DMSH_TARGETS=mac`) for the iOS Metal compiler. `tool_lock.py` records `--source-sha`'s failure instead of its empty stdout (`xlate_embedded`: `does not run (<first message line>)`), so `dmsh_build.py` run directly and `--update-lock` stop with the same message as the NSP script, without the lock and rebuild lines. The tool checks used to be in `dmsh_chain.py`, which is part of the chain version and of every shader's cache key, so that fix rebuilt every library; they now live in `tool_lock.py`, outside both, and a change to them rebuilds nothing.
 - **Found on:** NX2Apple builds ([LNPANDY/NX2Apple#31](https://github.com/LNPANDY/NX2Apple/issues/31), item 3; [PR #477](https://github.com/seedds/nxnative/pull/477), [PR #487](https://github.com/seedds/nxnative/pull/487)); reproduced with `arch -x86_64`. Applies to every game.
 
+### An iOS Vulkan or OpenGL build also compiles unused Mac libraries
+
+- **Symptom:** a first iOS build runs Metal compilation and linking for both platforms, although its app uses only iOS libraries.
+- **Cause:** `vk_shaders.py` and `gl_shaders.py` treated `--ios` as an additional destination. The NSP caller always requested it for iOS, deleted both output directories, and allowed an iOS key to authorize reuse of a Mac output.
+- **Fix:** shared `shader_targets.py` parses `--targets mac`, `ios`, or `mac,ios`. The NSP caller requests only its platform, replaces only its output, and checks and writes only its own reuse key. Direct tool calls keep the previous defaults: Mac alone, or both when `--ios` is supplied without `--targets`. Translation and compiler flags remain unchanged.
+- **Found on:** synthetic first-build audit, 2026-10-31, Apple M2 Max, macOS 26.6, native ARM Python 3.14 and installed Xcode 27.0 Metal. With 48 synthetic shaders per API (24 vertex, 24 fragment), three alternating baseline/candidate runs with fresh outputs gave median Vulkan times of **2.576 → 1.368 s** and OpenGL times of **3.830 → 3.221 s**. These used real GLSL/SPIR-V translation and Metal compilation; the iOS libraries and tables were byte-identical. These are stage measurements, not full-game build times or validation with the repository's pinned Xcode 27.2.
+
+### SARC filename parsing scans the archive payload for every member
+
+- **Symptom:** shader discovery spends disproportionate time parsing a SARC with many entries or a large payload.
+- **Cause:** `sarc_files` sliced the entire archive after each filename offset and split all those bytes at every NUL. Repeating that work for every member copies and scans the payload repeatedly.
+- **Fix:** find the first NUL between the filename offset and the archive's data offset, then decode only that name. Reject offsets outside the name table and names without a terminator there. Unnamed members keep their generated names. Payload extraction is unchanged.
+- **Found on:** synthetic first-build audit on the machine above. An 8 MiB archive with 128 members took a median **0.535652 → 0.000240 s** over five parser runs; every member's name and bytes matched. This isolates filename parsing and does not predict the speedup of a whole archive scan or game build. `test_sarc_names.py` covers named, unnamed and malformed entries, alongside the existing nesting tests.
+
 ## IPA archives
 
 ### A streamed file changes size and the IPA fails its CRC check
@@ -25,7 +39,29 @@
 - **Fix:** count uncompressed bytes as they are read and compare them with the listed size before completing either streamed method. A mismatch stops the pack and removes the partial archive, preserving the previous IPA and its reuse index. Regression tests cover growth and shrinkage with both deflate and store.
 - **Found on:** synthetic IPA inputs while reviewing [PR #279](https://github.com/seedds/nxnative/pull/279); no game files required.
 
+### A large RomFS image compresses on one CPU core
+
+- **Symptom:** the first IPA pack underuses the CPU while compressing a large RomFS image, even though smaller files already compress concurrently.
+- **Cause:** entries above 256 MiB bypassed the file worker pool and ran one streaming zlib compressor on the writer thread.
+- **Fix:** large deflated entries use at most eight workers on 4 MiB blocks. Each worker receives the preceding 32 KiB dictionary and emits raw Deflate with `Z_SYNC_FLUSH`; ordered block writes and a final empty `Z_FINISH` stream form one standard ZIP entry. Level 6, rolling CRC, Zip64, input-size checks, incompressible stored fallback and atomic publication remain intact. The queue bounds memory independently of the file size. The index version increases to 4, so the first pack after updating rebuilds an older index. Compressed bytes and sizes may differ slightly. See [zlib's flush and dictionary semantics](https://zlib.net/manual.html).
+- **Found on:** synthetic cold packs (`--no-reuse`) on the machine above, three alternating baseline/candidate runs per 288 MiB input. OS file caches were not purged. Every decompressed input matched its SHA-256. A separate sparse **4 GiB + 17 byte** entry packed in **4.212 s** and passed Python's ZIP CRC check and `/usr/bin/unzip -t`. `test_pack_parallel.py` covers real concurrent compressors, chunk boundaries, ordering, stored fallback and failure cleanup; the existing packer tests cover reuse and changing input sizes.
+
+| Synthetic input | Before, median | After, median | Before IPA bytes | After IPA bytes |
+|---|---:|---:|---:|---:|
+| Incompressible | 5.471 s | 1.075 s | 301,990,240 | 301,990,240 |
+| Mixed | 3.010 s | 0.505 s | 151,683,065 | 151,632,138 |
+| Compressible | 1.222 s | 0.309 s | 880,171 | 880,514 |
+
+These measurements compare the first-build changes with `5fd06dd19eac`; they are synthetic pack timings, not complete game builds. The initial Legends Z-A regression stopped on the baseline because installed Metal `32023.921.6` does not match the chain's required `32023.922.4`. A later cached-artifact check passes; its scope and the outstanding five-game and gameplay validation are recorded in [Z-A's measurements](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements).
+
 ## RomFS images
+
+### RomFS extraction serializes decryption and verification
+
+- **Symptom:** a first `--romfs-image` extraction underuses the CPU even when most of the image is one large file.
+- **Cause:** the writer reads each file serially. Merely adding readers still serializes through LibHac 0.19's shared cache, AES state and `LocalStorage` seek lock; concurrent scattered output writes can also lose the benefit.
+- **Fix:** `nx_extract` opens one independent NCA storage stack per worker over a shared positional, read-only `PackageStorage`. Up to eight workers read and verify 4 MiB blocks, including blocks of the same file, while one writer consumes them in image order. One outstanding block per worker bounds buffering; every worker is joined before cleanup, and only a complete image is renamed into place. Damage is reported once per file in deterministic order and marked in the image index. A failed checked stack is reopened before that worker continues, preserving the damaged-input handling of #810. `--allow-damaged` uses independent lenient stacks; the damage filter also recognizes LibHac's RomFS verification result `2002-4144`, which the former `46xx` filter missed. Directory extraction retains its existing path.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements), with real base/update extraction and byte-identical images. Synthetic LibHac tests cover overlap, empty and large files, positional reads, strict/lenient damage handling and failure cleanup.
 
 ### RomFS folder transfers fail or leave stale game files
 

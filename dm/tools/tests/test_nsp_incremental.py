@@ -771,7 +771,7 @@ class LayerShaders(Base):
         logs = self.tmp / 'logs'; logs.mkdir(); runs = []
         def translate(cmd, log, **kw):
             api = Path(cmd[1]).stem.split('_')[0]
-            lib = Path(cmd[-1]) / api / f'{api}_shaders.metallib'
+            lib = Path(cmd[cmd.index('--targets') - 1]) / api / f'{api}_shaders.metallib'
             lib.parent.mkdir(parents=True); lib.write_bytes(b'library')
             Path(log).write_text('macosx: 1\n'); runs.append(api)
         with mock.patch.object(nsp, 'run', side_effect=translate), mock.patch.object(nsp, 'toolchain', return_value=()), \

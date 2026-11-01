@@ -113,8 +113,8 @@ DAMAGED_FIXTURE = r'''
 using System; using System.Collections.Generic; using System.IO; using System.Reflection;
 using LibHac; using LibHac.Fs; using LibHac.Fs.Fsa; using LibHac.FsSystem; using LibHac.Tools.FsSystem; using LibHac.Tools.FsSystem.RomFs; using Path = System.IO.Path;
 class Failing : IStorage {
-    readonly IStorage b; public Failing(IStorage s) { b = s; }
-    public override Result Read(long o, Span<byte> d) { var r = b.Read(o, d); if (r.IsFailure()) return r; return d.IndexOf("HASHFAILED!!"u8) >= 0 ? new Result(2, 4602) : Result.Success; }
+    readonly IStorage b; readonly bool fail; public Failing(IStorage s, bool fail = true) { b = s; this.fail = fail; }
+    public override Result Read(long o, Span<byte> d) { var r = b.Read(o, d); if (r.IsFailure()) return r; return fail && d.IndexOf("HASHFAILED!!"u8) >= 0 ? new Result(2, 4602) : Result.Success; }
     public override Result Write(long o, ReadOnlySpan<byte> s) => b.Write(o, s);
     public override Result Flush() => b.Flush();
     public override Result SetSize(long s) => b.SetSize(s);
@@ -137,8 +137,9 @@ class Fixture {
         Func<IFileSystem> open = () => new RomFsFileSystem(new CachedStorage(new Failing(rom), 0x4000, 4, true));
         typeof(P).GetField("g_lenient", S).SetValue(null, (Func<IFileSystem>)(() => new RomFsFileSystem(rom)));
         string o = a[1];
-        Run("image-strict", false, "WriteImage", open, Path.Combine(o, "strict.img"));
-        Run("image-allow", true, "WriteImage", open, Path.Combine(o, "allow.img"));
+        Func<IntegrityCheckLevel, IStorage> storage = level => level == IntegrityCheckLevel.ErrorOnInvalid ? new CachedStorage(new Failing(rom), 0x4000, 4, true) : new Failing(rom, false);
+        Run("image-strict", false, "WriteImage", (RomFsFileSystem)open(), Path.Combine(o, "strict.img"), storage);
+        Run("image-allow", true, "WriteImage", (RomFsFileSystem)open(), Path.Combine(o, "allow.img"), storage);
         Run("copy-strict", false, "Copy", open, Path.Combine(o, "strict"), null);
         Run("copy-allow", true, "Copy", open, Path.Combine(o, "allow"), null);
         Run("manifest", false, "Manifest", open, Path.Combine(o, "manifest", "romfs_manifest.tsv"));
@@ -152,6 +153,7 @@ class ExtractImage(unittest.TestCase):
     def test_every_damaged_file_is_listed_past_the_hash_cache(self):
         # 8 damaged files use up CachedStorage's 4 blocks: a filesystem kept after its failures throws "The LinkedList is empty" and no list comes out (issue #810).
         # MAGIC sits in the middle of a 64 KB file, so the 16 KB block that fails holds only that file; .nro makes the manifest read the whole file.
+        # Force one image worker so its storage sees more failures than the cache holds blocks.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); src = root / 'files'; src.mkdir(); out = root / 'out'; out.mkdir()
             bad, good = {}, {}
@@ -165,7 +167,7 @@ class ExtractImage(unittest.TestCase):
                                f'<Compile Include="{REPO}/dm/tools/nx_extract/Program.cs" Link="Extractor.cs" />'
                                '<PackageReference Include="LibHac" Version="0.19.0" /></ItemGroup></Project>')
             (root / 'Fixture.cs').write_text(DAMAGED_FIXTURE)
-            result = subprocess.run(['dotnet', 'run', '--project', str(project), '--', str(src), str(out)], capture_output=True, text=True, timeout=240)
+            result = subprocess.run(['dotnet', 'run', '--project', str(project), '--', str(src), str(out)], capture_output=True, text=True, timeout=240, env=dict(os.environ, DOTNET_PROCESSOR_COUNT='1'))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             rows = {r[1]: r[2:] for r in (line.split(' ') for line in result.stdout.splitlines() if line.startswith('RESULT '))}
             listed = ','.join(f'/{name}' for name in sorted(bad))
@@ -195,10 +197,12 @@ class ExtractImage(unittest.TestCase):
                                '<StartupObject>Fixture</StartupObject><AllowUnsafeBlocks>true</AllowUnsafeBlocks></PropertyGroup><ItemGroup>'
                                f'<Compile Include="{REPO}/dm/tools/nx_extract/Program.cs" Link="Extractor.cs" />'
                                '<PackageReference Include="LibHac" Version="0.19.0" /></ItemGroup></Project>')
-            (root / 'Fixture.cs').write_text('using System.Reflection; using LibHac.FsSystem; class Fixture { static void Main(string[] a) {'
+            (root / 'Fixture.cs').write_text('using System.Reflection; using LibHac.FsSystem; using LibHac.Tools.FsSystem.RomFs; class Fixture { static void Main(string[] a) {'
                 'var write = typeof(P).GetMethod("WriteImage", BindingFlags.NonPublic | BindingFlags.Static);'
-                'using var fs = new LocalFileSystem(a[0]); write.Invoke(null, new object[]{(System.Func<LibHac.Fs.Fsa.IFileSystem>)(() => fs), a[1]});'
-                'write.Invoke(null, new object[]{null, a[2]}); }}')
+                'using var input = new LocalFileSystem(a[0]); var builder = new RomFsBuilder(input);'
+                'var table = (HierarchicalRomFileTable<RomFileInfo>)typeof(RomFsBuilder).GetProperty("FileTable", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(builder);'
+                'table.AddDirectory("/data/empty"); using var storage = builder.Build(); using var fs = new RomFsFileSystem(storage);'
+                'write.Invoke(null, new object[]{fs, a[1], null}); write.Invoke(null, new object[]{null, a[2], null}); }}')
             image, empty = root / 'RomFS.img', root / 'empty.img'
             result = subprocess.run(['dotnet', 'run', '--project', str(project), '--', str(src), str(image), str(empty)], capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

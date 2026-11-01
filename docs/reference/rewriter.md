@@ -2,6 +2,15 @@
 
 The NSO rewriter (`dm/tools/patch_nso.py`) and its per-build tables (`dm/tools/sdk_patches.py`, a profile's `patches.py`). Each entry: symptom, cause, fix, the games it was found on. The [symptom index](../agents/symptoms.md) lists every symptom.
 
+## Build performance
+
+### Function analysis runs on one CPU core
+
+- **Symptom:** the initial NSO rewrite returns to one busy core after its parallel instruction scan, while examining functions containing `x18` instructions.
+- **Cause:** exclusive-window, retry-block and jump-table analysis ran serially. Some jump-table proofs depend on tables discovered in earlier functions, so analyzing all functions with empty context and merging blindly is unsafe.
+- **Fix:** bounded function pieces are analyzed in the existing `DM_REWRITE_J` process pool, largest first. Workers return selected instruction addresses and plain metadata, with patch emission retained in the parent. Results merge in original address order; any function reached by an earlier table is reanalyzed with that context before acceptance. Giant unsplit functions stay serial to bound Capstone memory, and small modules avoid process startup. Existing cross-piece checks remain after the merge.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements), with identical rewritten code and tables. Tests pin actual overlapping analysis, retry-window results and rejection of a proof bypassed by an earlier jump table.
+
 ## Disassembler dependencies
 
 ### Capstone API version

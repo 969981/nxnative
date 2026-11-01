@@ -16,6 +16,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using LibHac.Common;
 using LibHac.Common.Keys;
 using LibHac.Fs;
@@ -29,6 +31,29 @@ using LibHac.Tools.FsSystem.NcaUtils;
 using LibHac.Tools.FsSystem.RomFs;
 using LibHac.Tools.Ncm;
 using Path = System.IO.Path;
+
+// Package offsets are immutable. Positional reads avoid LocalStorage's shared seek lock, which otherwise
+// serializes and interleaves all worker reads through one FileStream buffer.
+sealed class PackageStorage : IStorage {
+    readonly Microsoft.Win32.SafeHandles.SafeFileHandle handle;
+    readonly long length;
+    public PackageStorage(string path) { handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read, FileOptions.RandomAccess); length = RandomAccess.GetLength(handle); }
+    public override LibHac.Result Read(long offset, Span<byte> destination) {
+        if (offset < 0 || offset > length || destination.Length > length - offset) return ResultFs.OutOfRange.Value;
+        while (!destination.IsEmpty) {
+            int got = RandomAccess.Read(handle, destination, offset);
+            if (got == 0) return ResultFs.OutOfRange.Value;
+            offset += got; destination = destination.Slice(got);
+        }
+        return LibHac.Result.Success;
+    }
+    public override LibHac.Result GetSize(out long size) { size = length; return LibHac.Result.Success; }
+    public override LibHac.Result Flush() => LibHac.Result.Success;
+    public override LibHac.Result Write(long offset, ReadOnlySpan<byte> source) => throw new NotSupportedException("read-only package");
+    public override LibHac.Result SetSize(long size) => throw new NotSupportedException("read-only package");
+    public override LibHac.Result OperateRange(Span<byte> output, OperationId op, long offset, long size, ReadOnlySpan<byte> input) => throw new NotSupportedException();
+    public override void Dispose() { handle.Dispose(); base.Dispose(); }
+}
 
 static class P {
     [DllImport("libc", SetLastError = true)] static extern int clonefile(string src, string dst, uint flags);
@@ -84,12 +109,12 @@ static class P {
             Console.WriteLine("program has no data section: empty RomFS");
             return Damaged();
         }
-        IFileSystem Romfs(IntegrityCheckLevel level) => new RomFsFileSystem(updProg != null ? baseProg.OpenStorageWithPatch(updProg, NcaSectionType.Data, level) : baseProg.OpenStorage(NcaSectionType.Data, level));
-        Func<IFileSystem> romfs = () => Romfs(IntegrityCheckLevel.ErrorOnInvalid);
+        Func<IntegrityCheckLevel, IStorage> openRomfs = level => updProg != null ? baseProg.OpenStorageWithPatch(updProg, NcaSectionType.Data, level) : baseProg.OpenStorage(NcaSectionType.Data, level);
+        Func<IFileSystem> romfs = () => new RomFsFileSystem(openRomfs(IntegrityCheckLevel.ErrorOnInvalid));
         // the same RomFS without hash checks, for reading damaged files as they are (--allow-damaged)
-        g_lenient = () => Romfs(IntegrityCheckLevel.IgnoreOnInvalid);
+        g_lenient = () => new RomFsFileSystem(openRomfs(IntegrityCheckLevel.IgnoreOnInvalid));
         if (manifest) Manifest(romfs, Path.Combine(outDir, "romfs_manifest.tsv"));
-        else if (image) WriteImage(romfs, Path.Combine(outDir, "RomFS.img"));
+        else if (image) WriteImage((RomFsFileSystem)romfs(), Path.Combine(outDir, "RomFS.img"), openRomfs);
         else Copy(romfs, Path.Combine(outDir, "RomFS"), cmpDir);
         return Damaged();
     }
@@ -118,7 +143,7 @@ static class P {
 
     // Files whose data failed the hash check: listed at the end; exit code 3 unless --allow-damaged
     static readonly List<string> g_damaged = new List<string>(); static bool g_allow; static Func<IFileSystem> g_lenient; static IFileSystem g_lenientFs;
-    static bool HashError(HorizonResultException e) => e.ResultValue.Module == 2 && e.ResultValue.Description >= 4600 && e.ResultValue.Description < 4700;   // fs: integrity verification failures (2002-46xx)
+    static bool HashError(HorizonResultException e) => (e.ResultValue.Module == 2 && e.ResultValue.Description >= 4600 && e.ResultValue.Description < 4700) || e.ResultValue == ResultFs.NonRealDataVerificationFailed.Value;   // fs: NCA verification failures (2002-46xx), plus LibHac 0.19 RomFS data verification (2002-4144)
     // Lists a file that failed the hash check and returns a new checked filesystem to read on with. LibHac's CachedStorage takes a block off its list before reading into it and
     // does not put it back when the read fails, so after a few failures its 4 blocks are gone and the next read throws "The LinkedList is empty", which is no hash error.
     static IFileSystem Failed(string path, Func<IFileSystem> open) { g_damaged.Add(path); return open(); }
@@ -138,9 +163,10 @@ static class P {
         Nca data = Pick(pkg, NcaContentType.PublicData, id) ?? Pick(pkg, NcaContentType.Data, id) ?? throw new Exception(id == null ? "no data NCA in the DLC NSP" : $"no data NCA of add-on content {id:x16} in {Path.GetFileName(nsp)}");
         Console.WriteLine($"add-on content {data.Header.TitleId:x16}");
         Directory.CreateDirectory(image ? Path.GetDirectoryName(outDir) : outDir);
-        Func<IFileSystem> fs = () => new RomFsFileSystem(data.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid));
-        g_lenient = () => new RomFsFileSystem(data.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.IgnoreOnInvalid));
-        if (image) WriteImage(fs, outDir); else Copy(fs, outDir, null);
+        Func<IntegrityCheckLevel, IStorage> openRomfs = level => data.OpenStorage(NcaSectionType.Data, level);
+        Func<IFileSystem> fs = () => new RomFsFileSystem(openRomfs(IntegrityCheckLevel.ErrorOnInvalid));
+        g_lenient = () => new RomFsFileSystem(openRomfs(IntegrityCheckLevel.IgnoreOnInvalid));
+        if (image) WriteImage((RomFsFileSystem)fs(), outDir, openRomfs); else Copy(fs, outDir, null);
         return Damaged();
     }
 
@@ -161,7 +187,7 @@ static class P {
     // that type list (when it has one), and with a title ID only that title's: a cartridge dump with its update on it (1G+1U) or a merged NSP holds the update's NCAs beside the
     // base game's, its Program NCA under the same title ID; a cartridge with two games holds two Application content metas
     static List<Nca> OpenNsp(KeySet ks, string path, ContentMetaType? only = null, ulong? id = null) {
-        IFileSystem pfs; var st0 = new LocalStorage(path, FileAccess.Read);
+        IFileSystem pfs; var st0 = new PackageStorage(path);
         byte[] magic = new byte[4]; st0.Read(0x100, magic).ThrowIfFailure();
         if (System.Text.Encoding.ASCII.GetString(magic) == "HEAD") {   // XCI: the card header's magic at 0x100
             var xci = new Xci(ks, st0);
@@ -247,12 +273,11 @@ static class P {
     }
 
     sealed class ImageEntry {
-        public string Path; public byte[] Name; public bool Directory, Damaged; public long Size; public ulong A, B;
+        public string Path; public byte[] Name; public bool Directory; public long Size, Source; public ulong A, B; public int Damaged;
         public List<ImageEntry> Children = new List<ImageEntry>();
     }
     // Stream the merged, integrity-checked filesystem directly into DMROMFS1. No RomFS directories or per-resource host files are created.
-    static void WriteImage(Func<IFileSystem> open, string dst) {
-        IFileSystem fs = open?.Invoke();
+    static void WriteImage(RomFsFileSystem fs, string dst, Func<IntegrityCheckLevel, IStorage> openStorage = null) {
         var root = new ImageEntry { Path = "/", Name = Array.Empty<byte>(), Directory = true };
         var byPath = new Dictionary<string, ImageEntry>(StringComparer.Ordinal) { ["/"] = root };
         if (fs != null) foreach (DirectoryEntryEx e in fs.EnumerateEntries("*", SearchOptions.RecurseSubdirectories)) {
@@ -275,29 +300,23 @@ static class P {
         string part = dst + ".part"; long files = 0, bytes = 0; int damaged = g_damaged.Count;
         try {
             using (var output = File.Create(part)) using (var writer = new BinaryWriter(output)) {
-                writer.Write(new byte[32]); byte[] buffer = new byte[4 << 20];
+                long index = 32;
                 foreach (var e in entries) {
                     if (e.Directory) continue;
-                    e.A = (ulong)output.Position; e.B = (ulong)e.Size; files++; bytes += e.Size;
-                    using var f = new UniqueRef<IFile>();
-                    fs.OpenFile(ref f.Ref, e.Path.ToU8Span(), OpenMode.Read).ThrowIfFailure();
-                    try { WriteStream(f.Get, output, e.Size, buffer); }
-                    catch (HorizonResultException x) when (HashError(x)) {
-                        fs = Failed(e.Path, open);
-                        if (!g_allow) continue;
-                        e.Damaged = true;
-                        g_lenientFs ??= g_lenient();
-                        using var lf = new UniqueRef<IFile>();
-                        g_lenientFs.OpenFile(ref lf.Ref, e.Path.ToU8Span(), OpenMode.Read).ThrowIfFailure();
-                        output.Position = (long)e.A; output.SetLength(output.Position);
-                        WriteStream(lf.Get, output, e.Size, buffer);
-                    }
+                    if (!fs.FileTable.TryOpenFile(e.Path, out var info)) throw new IOException($"RomFS file disappeared: {e.Path}");
+                    e.Source = checked(fs.Header.DataOffset + info.Offset);
+                    e.A = (ulong)index; e.B = (ulong)e.Size; index = checked(index + e.Size); files++; bytes += e.Size;
                 }
+                writer.Write(new byte[32]); writer.Flush(); output.SetLength(index);
+                ReadImageData(fs, openStorage, entries, output);
+                // Worker completion order must not change the image layout or the order of the damage report.
+                foreach (var e in entries) if (e.Damaged != 0) g_damaged.Add(e.Path);
+                output.Position = index;
                 if (g_damaged.Count == damaged || g_allow) {
-                    long index = output.Position; using var names = new MemoryStream();
+                    using var names = new MemoryStream();
                     foreach (var e in entries) {
                         writer.Write(e.A); writer.Write(e.B); writer.Write(checked((uint)names.Position));
-                        writer.Write(checked((ushort)e.Name.Length)); writer.Write((byte)(e.Directory ? 0 : 1)); writer.Write((byte)(e.Damaged ? 1 : 0));
+                        writer.Write(checked((ushort)e.Name.Length)); writer.Write((byte)(e.Directory ? 0 : 1)); writer.Write((byte)(e.Damaged != 0 ? 1 : 0));
                         names.Write(e.Name);
                     }
                     names.Position = 0; names.CopyTo(output); long size = output.Position - index;
@@ -310,11 +329,60 @@ static class P {
             Console.WriteLine($"{dst}: {files} files {bytes / 1048576.0:F1} MB, image with {entries.Count} entries");
         } catch { File.Delete(part); throw; }
     }
-    static void WriteStream(IFile file, Stream output, long size, byte[] buffer) {
-        for (long offset = 0; offset < size;) {
-            file.Read(out long got, offset, buffer.AsSpan(0, (int)Math.Min(buffer.Length, size - offset)), ReadOption.None).ThrowIfFailure();
-            if (got <= 0) throw new IOException($"cannot read @{offset}");
-            output.Write(buffer, 0, (int)got); offset += got;
+    static void ReadImageData(RomFsFileSystem fs, Func<IntegrityCheckLevel, IStorage> openStorage, List<ImageEntry> entries, FileStream output) {
+        if (fs == null) return;
+        const int block = 4 << 20;
+        // LibHac 0.19 CachedStorage serializes reads and AES/integrity objects carry mutable state. Each worker
+        // owns a fresh NCA storage stack; only the positional, read-only PackageStorage is shared.
+        // At most one block per worker is outstanding. Write in input order to keep disk writes sequential.
+        int workers = openStorage == null ? 1 : Math.Min(8, Environment.ProcessorCount);
+        var stores = new IStorage[workers]; var buffers = new byte[workers][]; var lenient = new IStorage[workers];
+        var pending = new Queue<(int Slot, ImageEntry Entry, long Offset, int Size, Task<bool> Read)>();
+        object factoryLock = new object(); int nextFile = 0; long nextOffset = 0;
+        bool Read(int slot, ImageEntry entry, long offset, int size) {
+            try { stores[slot].Read(entry.Source + offset, buffers[slot].AsSpan(0, size)).ThrowIfFailure(); }
+            catch (HorizonResultException e) when (HashError(e)) {
+                Interlocked.Exchange(ref entry.Damaged, 1);
+                // A failed CachedStorage read loses one of its cache blocks (upstream #810). Reopen only
+                // this worker's checked stack before its next block, so repeated damage cannot exhaust it.
+                if (openStorage != null) {
+                    var failed = stores[slot]; stores[slot] = null; failed.Dispose();
+                    lock (factoryLock) stores[slot] = openStorage(IntegrityCheckLevel.ErrorOnInvalid);
+                }
+                if (!g_allow) return false;
+                if (lenient[slot] == null) {
+                    lock (factoryLock) lenient[slot] = openStorage != null ? openStorage(IntegrityCheckLevel.IgnoreOnInvalid) : ((RomFsFileSystem)g_lenient()).GetBaseStorage();
+                }
+                lenient[slot].Read(entry.Source + offset, buffers[slot].AsSpan(0, size)).ThrowIfFailure();
+            }
+            return true;
+        }
+        void Submit(int slot) {
+            while (nextFile < entries.Count && (entries[nextFile].Directory || nextOffset == entries[nextFile].Size)) { nextFile++; nextOffset = 0; }
+            if (nextFile == entries.Count) return;
+            var entry = entries[nextFile]; long offset = nextOffset; int size = (int)Math.Min(block, entry.Size - offset); nextOffset += size;
+            pending.Enqueue((slot, entry, offset, size, Task.Run(() => Read(slot, entry, offset, size))));
+        }
+        try {
+            // Construct stacks serially: Nca also lazily initializes state while opening storage.
+            for (int i = 0; i < workers; i++) {
+                stores[i] = openStorage == null ? fs.GetBaseStorage() : openStorage(IntegrityCheckLevel.ErrorOnInvalid);
+                buffers[i] = new byte[block];
+            }
+            for (int i = 0; i < workers; i++) Submit(i);
+            while (pending.Count != 0) {
+                var job = pending.Dequeue();
+                if (job.Read.GetAwaiter().GetResult()) {
+                    output.Position = checked((long)job.Entry.A + job.Offset);
+                    output.Write(buffers[job.Slot], 0, job.Size);
+                }
+                Submit(job.Slot);
+            }
+        } finally {
+            // Join every outstanding read before disposing its storage or removing the partial output.
+            foreach (var job in pending) try { job.Read.GetAwaiter().GetResult(); } catch { }
+            foreach (var storage in lenient) storage?.Dispose();
+            if (openStorage != null) foreach (var storage in stores) storage?.Dispose();
         }
     }
 
