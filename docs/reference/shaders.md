@@ -9,7 +9,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Symptom:** a first shader split completes all executable scans and archive preparation before scanning resources, then waits for every archive range before submitting loose files.
 - **Cause:** serial preparation and separate pool submissions create barriers between otherwise independent scans. LINKDATA indexes were also parsed again merely to exclude their files from the loose-file list.
 - **Fix:** `shader_split.py` scans executable versions in one process-pool task while another prepares archive ranges, then submits archive ranges and loose-file batches together to the same pool. Executables stay serial within their task to bound full-image memory. The first executable's Unity strings and the zstd dictionaries are loaded before worker initialization; executable scans temporarily use their original context and restore the worker context afterward. Results retain executable, archive and loose-file precedence, including Unity's deferred second pass. LINKDATA discovery is reused for exclusion.
-- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements). Scheduling tests force overlap and verify order, progress and error propagation; the game benchmark compares every generated package and table.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements).
 
 ### Sumo Ninty_NX shaders and MuxFDMR streams
 
@@ -508,7 +508,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Symptom:** a first shader build waits for every translator process before compiling any MSL, then waits for every unpaired shader before compiling paired vertices.
 - **Cause:** static translator chunks and two global finishing phases impose barriers beyond the vertex shader's actual pixel dependencies.
 - **Fix:** `dmsh_schedule.py` schedules bounded translation batches and ready finishing jobs on one `J` worker budget. A paired vertex becomes ready after its own pixel jobs finish publishing their sources, including failed-job handling; returned results keep the original order. The pinned translator binary is unchanged. Progress counts published shaders instead of the highest ordered key, since completion order now varies.
-- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-scheduling-measurements). Tests cover overlap, dependency publication, failed/cached dependencies, concurrency bounds, single-worker progress and cycles.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-scheduling-measurements).
 
 ### Tested tools and compiler-specific shader caches
 
@@ -1228,7 +1228,7 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Symptom:** preparing a large pipeline archive spends time opening reflection and library files before starting `metal-tt`.
 - **Cause:** planning reads function headers and layer markers separately, and the archive cache key later rereads the selected libraries for SHA-256.
 - **Fix:** bounded input readers prepare unique reflection records and libraries. Each library read supplies its function metadata, layer marker and digest; only that small metadata remains in memory. Pair selection, skip counts, descriptor order and sorted digest reduction remain deterministic. `--jobs` controls reader concurrency; the default is at most eight cores. This changes preparation, not `metal-tt`'s compiler scheduling.
-- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-scheduling-measurements). Tests compare serial and concurrent preparation, missing/malformed inputs and reuse of prepared digests without reopening libraries.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-scheduling-measurements).
 
 ### A compile that does not return stalls every flush and draw
 

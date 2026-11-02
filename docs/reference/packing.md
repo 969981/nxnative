@@ -21,14 +21,14 @@
 - **Symptom:** a first iOS build runs Metal compilation and linking for both platforms, although its app uses only iOS libraries.
 - **Cause:** `vk_shaders.py` and `gl_shaders.py` treated `--ios` as an additional destination. The NSP caller always requested it for iOS, deleted both output directories, and allowed an iOS key to authorize reuse of a Mac output.
 - **Fix:** shared `shader_targets.py` parses `--targets mac`, `ios`, or `mac,ios`. The NSP caller requests only its platform, replaces only its output, and checks and writes only its own reuse key. Direct tool calls keep the previous defaults: Mac alone, or both when `--ios` is supplied without `--targets`. Translation and compiler flags remain unchanged.
-- **Found on:** synthetic first-build audit, 2026-10-31, Apple M2 Max, macOS 26.6, native ARM Python 3.14 and installed Xcode 27.0 Metal. With 48 synthetic shaders per API (24 vertex, 24 fragment), three alternating baseline/candidate runs with fresh outputs gave median Vulkan times of **2.576 → 1.368 s** and OpenGL times of **3.830 → 3.221 s**. These used real GLSL/SPIR-V translation and Metal compilation; the iOS libraries and tables were byte-identical. These are stage measurements, not full-game build times or validation with the repository's pinned Xcode 27.2.
+- **Found on:** synthetic first-build inputs exercising both graphics APIs; no complete game build is implied.
 
 ### SARC filename parsing scans the archive payload for every member
 
 - **Symptom:** shader discovery spends disproportionate time parsing a SARC with many entries or a large payload.
 - **Cause:** `sarc_files` sliced the entire archive after each filename offset and split all those bytes at every NUL. Repeating that work for every member copies and scans the payload repeatedly.
 - **Fix:** find the first NUL between the filename offset and the archive's data offset, then decode only that name. Reject offsets outside the name table and names without a terminator there. Unnamed members keep their generated names. Payload extraction is unchanged.
-- **Found on:** synthetic first-build audit on the machine above. An 8 MiB archive with 128 members took a median **0.535652 → 0.000240 s** over five parser runs; every member's name and bytes matched. This isolates filename parsing and does not predict the speedup of a whole archive scan or game build. `test_sarc_names.py` covers named, unnamed and malformed entries, alongside the existing nesting tests.
+- **Found on:** synthetic SARC archives with named, unnamed and malformed entries.
 
 ## IPA archives
 
@@ -44,15 +44,7 @@
 - **Symptom:** the first IPA pack underuses the CPU while compressing a large RomFS image, even though smaller files already compress concurrently.
 - **Cause:** entries above 256 MiB bypassed the file worker pool and ran one streaming zlib compressor on the writer thread.
 - **Fix:** large deflated entries use at most eight workers on 4 MiB blocks. Each worker receives the preceding 32 KiB dictionary and emits raw Deflate with `Z_SYNC_FLUSH`; ordered block writes and a final empty `Z_FINISH` stream form one standard ZIP entry. Level 6, rolling CRC, Zip64, input-size checks, incompressible stored fallback and atomic publication remain intact. The queue bounds memory independently of the file size. The index version increases to 4, so the first pack after updating rebuilds an older index. Compressed bytes and sizes may differ slightly. See [zlib's flush and dictionary semantics](https://zlib.net/manual.html).
-- **Found on:** synthetic cold packs (`--no-reuse`) on the machine above, three alternating baseline/candidate runs per 288 MiB input. OS file caches were not purged. Every decompressed input matched its SHA-256. A separate sparse **4 GiB + 17 byte** entry packed in **4.212 s** and passed Python's ZIP CRC check and `/usr/bin/unzip -t`. `test_pack_parallel.py` covers real concurrent compressors, chunk boundaries, ordering, stored fallback and failure cleanup; the existing packer tests cover reuse and changing input sizes.
-
-| Synthetic input | Before, median | After, median | Before IPA bytes | After IPA bytes |
-|---|---:|---:|---:|---:|
-| Incompressible | 5.471 s | 1.075 s | 301,990,240 | 301,990,240 |
-| Mixed | 3.010 s | 0.505 s | 151,683,065 | 151,632,138 |
-| Compressible | 1.222 s | 0.309 s | 880,171 | 880,514 |
-
-These measurements compare the first-build changes with `5fd06dd19eac`; they are synthetic pack timings, not complete game builds. The initial Legends Z-A regression stopped on the baseline because installed Metal `32023.921.6` does not match the chain's required `32023.922.4`. A later cached-artifact check passes; its scope and the outstanding five-game and gameplay validation are recorded in [Z-A's measurements](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements).
+- **Found on:** synthetic first-pack inputs, including compressible, mixed and incompressible images and a Zip64-sized entry.
 
 ## RomFS images
 
@@ -60,7 +52,7 @@ These measurements compare the first-build changes with `5fd06dd19eac`; they are
 
 - **Symptom:** the parallel extractor proposed in PR #896 takes about twice as long as the serial baseline for a large RomFS on a 16 GB Mac, despite improving a smaller image on the same machine ([reviewer's measurements](https://github.com/seedds/nxnative/pull/896#issuecomment-6565317214)).
 - **Cause:** **open.** Independent LibHac storage stacks and positional package reads remove the shared seek lock, but add read and scheduling overhead. Healthy input does not reopen stacks after startup; reopening after a hash failure alone does not explain the healthy-input regression. The small-machine slowdown has not been reproduced locally, so memory pressure or a specific I/O mechanism is not established as its cause.
-- **Fix:** **parallel extraction withdrawn from PR #896.** Restore the serial `LocalStorage` / `WriteStream` implementation, including #810's reopen-after-damage handling. No extraction speedup is claimed by the remaining change. A future parallel implementation needs measurements on the affected workload before it replaces this path. The integrity filter still recognizes the raw `NonRealDataVerificationFailed` result and its `RomFsFile` translation, `RomNonRealDataVerificationFailed` (`2002-4144`); either form must reach the same damage report and `--allow-damaged` path. Synthetic tests exercise both forms, empty and large files, and failure cleanup.
+- **Fix:** **parallel extraction withdrawn from PR #896.** Restore the serial `LocalStorage` / `WriteStream` implementation, including #810's reopen-after-damage handling. No extraction speedup is claimed by the remaining change. A future parallel implementation needs measurements on the affected workload before it replaces this path. The integrity filter still recognizes the raw `NonRealDataVerificationFailed` result and its `RomFsFile` translation, `RomNonRealDataVerificationFailed` (`2002-4144`); either form must reach the same damage report and `--allow-damaged` path.
 - **Found on:** the [PR #896 second-machine review](https://github.com/seedds/nxnative/pull/896#issuecomment-6565317214). The earlier improvement and follow-up measurements on [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements) are historical, not a general extraction performance claim.
 
 ### RomFS folder transfers fail or leave stale game files

@@ -9,14 +9,14 @@ The NSO rewriter (`dm/tools/patch_nso.py`) and its per-build tables (`dm/tools/s
 - **Symptom:** a first build finishes its small code modules while the remaining large rewrite keeps its original, smaller worker allocation.
 - **Cause:** the NSP script divided workers by the initial module count and passed the same fixed setting to every module.
 - **Fix:** default rewrites start with the largest uncompressed text segments and distribute one CPU budget by text size. When a module exits, its workers are assigned to surviving modules; each analysis pass reads its current allocation before forking. Active allocations only grow, so an existing pool cannot overlap a newly reduced allocation incorrectly. Queued modules reserve a slot before redistribution. Explicit `DM_REWRITE_J` retains its fixed per-module behavior. Allocation files are removed before publishing the rewritten modules and on failure.
-- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-scheduling-measurements). Tests cover allocation growth, queued-module reservations, NSO/NRO text sizes, explicit overrides and cancellation of active fork pools.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-scheduling-measurements).
 
 ### Function analysis runs on one CPU core
 
 - **Symptom:** the initial NSO rewrite returns to one busy core after its parallel instruction scan, while examining functions containing `x18` instructions.
 - **Cause:** exclusive-window, retry-block and jump-table analysis ran serially. Some jump-table proofs depend on tables discovered in earlier functions, so analyzing all functions with empty context and merging blindly is unsafe.
 - **Fix:** bounded function pieces are analyzed in the existing `DM_REWRITE_J` process pool, largest first. Workers return selected instruction addresses and plain metadata, with patch emission retained in the parent. Results merge in original address order; any function reached by an earlier table is reanalyzed with that context before acceptance. Giant unsplit functions stay serial to bound Capstone memory, and small modules avoid process startup. Existing cross-piece checks remain after the merge.
-- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements), with identical rewritten code and tables. Tests pin actual overlapping analysis, retry-window results and rejection of a proof bypassed by an earlier jump table.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements).
 
 ## Disassembler dependencies
 
