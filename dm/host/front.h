@@ -13,7 +13,7 @@ static inline void front_hud_env(void) {
 void front_run(void (*guest)(void));
 // The CAMetalLayer the graphics backend presents frames to (NULL when there is no window)
 void *front_metal_layer(void);
-// The highest refresh rate of the window's screen in Hz, 0 = not known (Mac front_mac.m; none on iOS, whose screens run at multiples of 60 Hz). Any thread
+// The highest refresh rate of the rendering window's screen in Hz, 0 = not known. Any thread; iOS publishes a scene-derived snapshot from the main thread.
 int front_screen_max_fps(void);
 // Whether the window's current screen mode supports variable refresh (Mac front_mac.m; none on iOS). Any thread
 int front_screen_variable_refresh(void);
