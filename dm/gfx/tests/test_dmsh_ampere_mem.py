@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Ampere memory instructions through the offline translator (dmsh_xlate, arch sm86): SUATOM (0x593), the image atomic Donkey Kong Bananza's agl
 technique compute shaders (agl_technique_pfx) take an append counter with; SURED (0x59f); ATOMS (0x38c, 0xf8c); shared memory's scaled address ([Ra.X4 / X8 / X16]),
-IMAD.HI and ATOMS.CAS. Needs DMSH_TEST_XLATE (the translator) like the other translator tests."""
+IMAD.HI and ATOMS.CAS; ISBERD and the stage output store (0x927) of task and mesh shaders translated as compute (job mesh_layout). Needs DMSH_TEST_XLATE (the translator)
+like the other translator tests."""
 import json, os, re, struct, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
@@ -174,6 +175,33 @@ class Atoms(Translated):
         msl = self.translate(inst(*s2r_tid(3)) + inst(*waiting(self.INC)) + inst(*EXIT), shared=0x100)
         self.assertRegex(msl, r'atomic_fetch_add_explicit\([^;]*, 1u,')
         self.assertRegex(msl, r'<< 2\b')
+
+
+class MeshStage(Translated):
+    """A task / mesh shader as compute (QueryAmpereMeshLayout, job mesh_layout = [index word, payload, outputs, primitive bytes] in shared memory): ISBERD reads the
+    workgroup's number (mode 0x78) or a payload word (0x38), 0x927 stores a word of the outputs (0xf8 mesh attributes, 0xb8 task payload) or a byte of the primitives
+    (0x80 an index, 0x88 the count). Mario Kart World's grass mesh and task shaders' encodings"""
+    LAYOUT = [0, 0x40, 0x900, 0x1000]
+    ISBERD_SYS = (0x000e280000007800, 0x00000000ff007923)   # ISBERD R0, [RZ] with bit 78: the workgroup's number
+    STORE_ATTR = (0x0001e2000000f800, 0x0000001007007927)   # [R7], R16 mode 0xf8: an attribute word
+    STORE_COUNT = (0x000fe20000008800, 0x00000300ff007927)  # [RZ + 3], R0 mode 0x88: the primitive count byte
+
+    def mesh(self, *code):
+        return self.translate(b''.join(inst(*i) for i in code) + inst(*EXIT), shared=0x1100, mesh_layout=self.LAYOUT)
+
+    def test_attribute_word_at_the_outputs(self):
+        msl = self.mesh(s2r_tid(7), s2r_tid(16), waiting(self.STORE_ATTR))
+        self.assertRegex(msl, r'\+ 2304\b')   # 0x900, the outputs
+        self.assertRegex(msl, r'_\d+\[[^\]]+\] = ')
+
+    def test_count_byte_after_the_attributes(self):
+        msl = self.mesh(self.ISBERD_SYS, waiting(self.STORE_COUNT))
+        self.assertIn('atomic_fetch_and_explicit', msl)   # the byte cleared in its word, then set: no 8-bit shared memory in the SPIR-V backend
+        self.assertIn('atomic_fetch_or_explicit', msl)
+
+    def test_not_outside_a_task_or_mesh_shader(self):
+        with self.assertRaises(AssertionError):
+            self.translate(inst(*s2r_tid(7)) + inst(*s2r_tid(16)) + inst(*waiting(self.STORE_ATTR)) + inst(*EXIT), shared=0x1100)
 
 
 if __name__ == '__main__':
