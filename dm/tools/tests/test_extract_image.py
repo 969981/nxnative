@@ -23,7 +23,7 @@ class Extraction(unittest.TestCase):
                            '<AllowUnsafeBlocks>true</AllowUnsafeBlocks><StartupObject>ExtractImageTests</StartupObject></PropertyGroup><ItemGroup>'
                            f'<Compile Include="{REPO}/dm/tools/nx_extract/Program.cs"/><Compile Include="{REPO}/dm/tools/tests/fixtures/extract_image.cs"/>'
                            '<PackageReference Include="LibHac" Version="0.19.0"/></ItemGroup></Project>')
-        cls.env = dict(os.environ, DOTNET_PROCESSOR_COUNT='4', DOTNET_CLI_TELEMETRY_OPTOUT='1')
+        cls.env = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT='1')
         r = subprocess.run(['dotnet', 'build', str(project), '-c', 'Release', '-o', str(cls.root / 'bin'), '--nologo', '-p:NuGetAudit=false'], env=cls.env, capture_output=True, text=True, timeout=120)
         if r.returncode: raise RuntimeError(r.stdout + r.stderr)
         cls.dll = cls.root / 'bin/extract_test.dll'
@@ -44,11 +44,8 @@ class Extraction(unittest.TestCase):
                 self.assertFalse(directory); self.assertEqual(size, len(expected))
                 f.seek(offset); self.assertEqual(f.read(size), expected)
 
-    def test_one_large_file_reads_concurrently_without_sharing_storage(self):
-        self.assert_contents(self.extract('parallel'))
-
-    def test_package_reads_are_positional_and_bounded(self):
-        self.extract('package')
+    def test_large_file_spans_multiple_read_blocks(self):
+        self.assert_contents(self.extract('clean'))
 
     def test_empty_image(self):
         out = self.extract('empty')
@@ -56,12 +53,16 @@ class Extraction(unittest.TestCase):
         self.assertEqual(out.stat().st_size, 56)
 
     def test_damage_is_reported_once_and_preserves_previous_image(self):
-        self.assertEqual(self.extract('damage').read_bytes(), b'previous image')
+        for mode in ('damage', 'raw-damage'):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.extract(mode).read_bytes(), b'previous image')
 
     def test_allow_damaged_rewrites_the_failed_ranges(self):
-        self.assert_contents(self.extract('allow'))
+        for mode in ('allow', 'raw-allow'):
+            with self.subTest(mode=mode):
+                self.assert_contents(self.extract(mode))
 
-    def test_worker_failure_preserves_previous_image(self):
+    def test_read_failure_preserves_previous_image(self):
         self.assertEqual(self.extract('failure').read_bytes(), b'previous image')
 
 

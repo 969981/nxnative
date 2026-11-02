@@ -2,6 +2,8 @@
 
 > Implemented inline with the executing-plans and test-driven-development skills. Preserve the earlier first-build improvements. Commit and PR publication were authorized on 2026-11-01.
 
+**Review scope update, 2026-11-01:** the user chose to withdraw Task 1's parallel RomFS extraction after PR #896's second-machine review found a large-image slowdown. The serial extractor is restored, retaining the raw and RomFS-translated integrity-error handling. Task 1 and its measurements below are historical; function analysis and shader discovery remain. See the [packing reference](../../reference/packing.md#parallel-romfs-extraction-can-be-slower-than-serial-extraction).
+
 **Goal:** Implement and measure the three additional parallelization improvements authorized by the user: RomFS extraction, rewriter function analysis, then shader discovery.
 
 **Architecture:** Bound concurrency and preserve deterministic output. RomFS work must use verified-safe storage access, fixed output offsets or an ordered writer, and atomic publication. Rewriter workers analyze independent functions and return serializable results; patch emission stays ordered. Shader discovery runs independent preparation tasks concurrently and submits archive and loose-file scans together without changing result order.

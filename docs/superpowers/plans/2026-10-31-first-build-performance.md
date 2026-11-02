@@ -2,6 +2,8 @@
 
 > Implemented inline with the executing-plans and test-driven-development skills. Commit and PR publication were authorized on 2026-11-01.
 
+**Review scope update, 2026-11-01:** SARC parsing, IPA compression and target selection remain in PR #896. The subsequent [parallelism plan](2026-10-31-first-build-parallelism.md) now records the withdrawal of parallel RomFS extraction after the second-machine review; its extraction speedup is no longer claimed.
+
 **Goal:** Reduce first-build work in SARC parsing, IPA compression, and Vulkan/OpenGL target selection, in that order, with correctness checks and benchmarks.
 
 **Architecture:** Bound SARC filename reads to the name table. Compress large ZIP entries in bounded parallel raw-Deflate blocks with the preceding 32 KiB as each block's dictionary, preserving level 6, ordered output, CRC, Zip64, stored fallback, and atomic publication. Select Mac/iOS outputs explicitly and retain other-target outputs and their own reuse keys.

@@ -56,12 +56,12 @@ These measurements compare the first-build changes with `5fd06dd19eac`; they are
 
 ## RomFS images
 
-### RomFS extraction serializes decryption and verification
+### Parallel RomFS extraction can be slower than serial extraction
 
-- **Symptom:** a first `--romfs-image` extraction underuses the CPU even when most of the image is one large file.
-- **Cause:** the writer reads each file serially. Merely adding readers still serializes through LibHac 0.19's shared cache, AES state and `LocalStorage` seek lock; concurrent scattered output writes can also lose the benefit.
-- **Fix:** `nx_extract` opens one independent NCA storage stack per worker over a shared positional, read-only `PackageStorage`. Up to eight workers read and verify 4 MiB blocks, including blocks of the same file, while one writer consumes them in image order. One outstanding block per worker bounds buffering; every worker is joined before cleanup, and only a complete image is renamed into place. Damage is reported once per file in deterministic order and marked in the image index. A failed checked stack is reopened before that worker continues, preserving the damaged-input handling of #810. `--allow-damaged` uses independent lenient stacks; the damage filter also recognizes LibHac's RomFS verification result `2002-4144`, which the former `46xx` filter missed. Directory extraction retains its existing path.
-- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements), with real base/update extraction and byte-identical images. Synthetic LibHac tests cover overlap, empty and large files, positional reads, strict/lenient damage handling and failure cleanup.
+- **Symptom:** the parallel extractor proposed in PR #896 takes about twice as long as the serial baseline for a large RomFS on a 16 GB Mac, despite improving a smaller image on the same machine ([reviewer's measurements](https://github.com/seedds/nxnative/pull/896#issuecomment-6565317214)).
+- **Cause:** **open.** Independent LibHac storage stacks and positional package reads remove the shared seek lock, but add read and scheduling overhead. Healthy input does not reopen stacks after startup; reopening after a hash failure alone does not explain the healthy-input regression. The small-machine slowdown has not been reproduced locally, so memory pressure or a specific I/O mechanism is not established as its cause.
+- **Fix:** **parallel extraction withdrawn from PR #896.** Restore the serial `LocalStorage` / `WriteStream` implementation, including #810's reopen-after-damage handling. No extraction speedup is claimed by the remaining change. A future parallel implementation needs measurements on the affected workload before it replaces this path. The integrity filter still recognizes the raw `NonRealDataVerificationFailed` result and its `RomFsFile` translation, `RomNonRealDataVerificationFailed` (`2002-4144`); either form must reach the same damage report and `--allow-damaged` path. Synthetic tests exercise both forms, empty and large files, and failure cleanup.
+- **Found on:** the [PR #896 second-machine review](https://github.com/seedds/nxnative/pull/896#issuecomment-6565317214). The earlier improvement and follow-up measurements on [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-stage-measurements) are historical, not a general extraction performance claim.
 
 ### RomFS folder transfers fail or leave stale game files
 
