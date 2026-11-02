@@ -1267,6 +1267,9 @@ void front_run(void (*guest)(void)) {
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp handler:^NSEvent *(NSEvent *e) {
             if (e.window != win) return e;   // Only swallow keys for the game window; other windows such as the software keyboard input box receive typing as usual
             if (e.type == NSEventTypeKeyDown && (e.modifierFlags & NSEventModifierFlagCommand)) return e;   // ⌘ shortcuts go to the menu; a key released while ⌘ is held still reaches the game, or it would stay pressed
+            if (e.type == NSEventTypeKeyDown && (e.modifierFlags & NSEventModifierFlagFunction) && [e.charactersIgnoringModifiers.lowercaseString isEqualToString:@"f"]) {   // fn+F, the system's full-screen shortcut: this monitor sees it before AppKit, and the game would get an F
+                if (!e.isARepeat) [win toggleFullScreen:nil];
+                return nil; }
             if (!e.isARepeat) on_key(e, e.type == NSEventTypeKeyDown);
             return nil;   // Swallow it to avoid the system beep
         }];
