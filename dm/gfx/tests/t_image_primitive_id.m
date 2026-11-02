@@ -10,6 +10,11 @@ static int checks, failed;
 #define CHECK(c, label) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s\n", label); } } while (0)
 static tex_t image = {.magic = MAGIC('T','E','X',0), .serial = 99901};
 static prog_t program = {.serial = 99902};
+static void fixture_cleanup(void) {
+    mtl_reg_tex(701, NULL, NULL);
+    mtl_tex_release(&image);
+    mtl_prog_release(&program);
+}
 int main(void) { @autoreleasepool {
     mtl_init();
     image.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D_ARRAY, .format = NVN_FORMAT_RGBA8, .width = 8, .height = 8, .depth = 4, .levels = 1, .samples = 1};
@@ -22,16 +27,18 @@ int main(void) { @autoreleasepool {
         "vertex VO v(uint n [[vertex_id]]) { int k = int(n % 3); VO o; o.p = float4(float(k & 2) * 2 - 1, 1 - float((k * 2) & 2) * 2, 0, 1); o.s = 1; return o; }\n"
         "struct A { texture2d_array<float, access::write> image [[id(0)]]; };\n"
         "fragment void f(float4 p [[position]], uint pid [[primitive_id]], constant A &a [[buffer(0)]]) { a.image.write(float4(float(pid + 1) * 0.25, 0, 0, 1), uint2(p.xy), pid); }\n";
-    char dir[] = "/tmp/t_image_primitive_id.XXXXXX"; if (!mkdtemp(dir)) return 1;
+    // serial_put's C-hash retain of texture is balanced by fixture_cleanup on every exit (mtl_tex_release -> serial_del -> hm_del_id); the analyzer cannot track that hash ownership.
+    // NOLINTNEXTLINE(clang-analyzer-osx.cocoa.RetainCount)
+    char dir[] = "/tmp/t_image_primitive_id.XXXXXX"; if (!mkdtemp(dir)) { fixture_cleanup(); return 1; }
     NSString *ms = [NSString stringWithFormat:@"%s/p.metal", dir], *air = [NSString stringWithFormat:@"%s/p.air", dir], *ml = [NSString stringWithFormat:@"%s/p.metallib", dir];
     [@(src) writeToFile:ms atomically:NO encoding:NSUTF8StringEncoding error:nil];
     for (NSArray *args in @[@[@"-sdk", @"macosx", @"metal", @"-c", ms, @"-o", air], @[@"-sdk", @"macosx", @"metallib", air, @"-o", ml]]) {   // the compiler with its arguments, no shell
         NSTask *t = [NSTask new]; t.executableURL = [NSURL fileURLWithPath:@"/usr/bin/xcrun"]; t.arguments = args;
-        if (![t launchAndReturnError:&error]) { fprintf(stderr, "metal compile: %s\n", error.localizedDescription.UTF8String); return 1; }
-        [t waitUntilExit]; if (t.terminationStatus) { fprintf(stderr, "metal compile failed\n"); return 1; }
+        if (![t launchAndReturnError:&error]) { fprintf(stderr, "metal compile: %s\n", error.localizedDescription.UTF8String); fixture_cleanup(); return 1; }
+        [t waitUntilExit]; if (t.terminationStatus) { fprintf(stderr, "metal compile failed\n"); fixture_cleanup(); return 1; }
     }
     id<MTLLibrary> lib = lib_from_file(ml, &error);
-    if (!lib) { fprintf(stderr, "%s\n", error.localizedDescription.UTF8String); return 1; }
+    if (!lib) { fprintf(stderr, "%s\n", error.localizedDescription.UTF8String); fixture_cleanup(); return 1; }
     NvProg *pr = [NvProg new]; pr->sh[0] = [NvShader new]; pr->sh[0]->fn = fn_spec(lib, @"v", nil, &error);   // through the Metal 4 bases, as the host loads shaders
     NvShader *fs = [NvShader new]; pr->sh[1] = fs; fs->stage = 1; fs->fn = fn_spec(lib, @"f", nil, &error);
     fs->rf.reads_prim_id = 1;   // as the reflection records it (raster.primitive_id): pso_build_ex builds the pipeline whole
@@ -57,5 +64,6 @@ int main(void) { @autoreleasepool {
         char label[96]; snprintf(label, sizeof label, "layer %u written by primitive %u", layer, layer); CHECK(good, label);
         printf("layer %u: first pixel %u,%u,%u,%u\n", layer, p[0], p[1], p[2], p[3]);
     }
+    fixture_cleanup();
     printf("IMAGE_PRIMITIVE_ID %d checks, %d failed\n", checks, failed); return failed != 0;
 } }
