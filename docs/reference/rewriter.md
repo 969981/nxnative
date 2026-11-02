@@ -268,7 +268,6 @@ To enroll a cut for any game's own module:
 - **Cause:** the rewriter assumed the patch area's 64 KB alignment left room for the state page after the key page. When the key page ends on that boundary, the patch code starts at the state address instead.
 - **Fix:** reserve the full 16 KB state page before aligning the patch area and emitting any branches. Only a registered main with a frame step needs the extra space; layouts that already have room, front patch areas and modules without a frame step stay unchanged.
 - **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#frame-rate) 2.0.2: key page `0x617c000`, state `0x6180000`, patch area `0x6190000`.
-- **Check:** `test_patches.FrameStateLayout` covers all four key-page alignments within 64 KB, unregistered builds, SDK modules and front layouts.
 
 ### Patch area right before the base for a long text
 
