@@ -1,6 +1,6 @@
 # Yakuza Kiwami (`0100C9801FEE6000`)
 
-Update 1.01 (v65536) over the base game (v0), SDK 18.3.2. Ryu Ga Gotoku Studio's engine with CRIWARE, on NVN. Modules `main`, `subsdk0` (the movie module) and `sdk`, and one NRO the game loads with `nn::ro`, `data/module/nnx/lexus_minigame_nnx_retail.nro` (registered by `lexus_minigame_nnx_retail.nrr`), which the NSP script collects and rewrites beside them. Brought up on 2026-11-02 and played on the Mac (M3 Pro) and an iPhone19,4 (A20 Pro, 12 GB, iOS 27.2): boot, the title, the story with its cutscenes and fights. No game-specific rewriter cut or host change: the two general fixes it needed are under [Found on this game](#found-on-this-game).
+Update 1.01 (v65536) over the base game (v0), SDK 18.3.2. Ryu Ga Gotoku Studio's engine with CRIWARE, on NVN. Modules `main`, `subsdk0` (the movie module) and `sdk`, and one NRO the game loads with `nn::ro`, `data/module/nnx/lexus_minigame_nnx_retail.nro` (registered by `lexus_minigame_nnx_retail.nrr`), which the NSP script collects and rewrites beside them. Brought up on 2026-11-02 and played on the Mac (M3 Pro) and an iPhone19,4 (A20 Pro, 12 GB, iOS 27.2): boot, the title, the story with its cutscenes and fights. No game-specific rewriter cut or host change: the two general fixes it needed are under [Found on this game](#found-on-this-game). The README gallery picture is a Mac frame of a fight (2026-11-02).
 
 Build ID of 1.01's `main` (first 16 hex digits, as cheat files name them): `AE90FD64E7B2FE1E`. Only 1.01 was brought up.
 
@@ -13,7 +13,7 @@ Build ID of 1.01's `main` (first 16 hex digits, as cheat files name them): `AE90
 | ADR-relative jump tables whose bounds check is far before the branch | `dm/tools/patch_nso.py` | without it the rewrite of `main` stops at `main+0x91b24c`: [rewriter reference](../../../docs/reference/rewriter.md#adr-relative-jump-table-whose-bounds-check-is-scheduled-far-before-its-branch) |
 | PARC archives and SLLZ streams | `dm/gfx/tools/shader_split.py` | without it the split finds no shader: [shaders reference](../../../docs/reference/shaders.md#glslc-outputs-in-ryu-ga-gotokus-parc-archives-and-sllz-streams) |
 
-`dm/tools/sdk_patches.py`'s SDK-wide rules cut its `sdk` build (`f118ae1c2e7728471aaf1a0d58484968`, SDK 18.3.2, the build Absolum ships): the AddressRegionManager node area from 1 GB to 62 MB, and 2 MB alignment for regions of 4 MB and more, as SDK 20. The runs below had an older form of those cuts, regions of 1 GB and more aligned to 32 MB (a per-build row the SDK-wide rule has replaced); the rule only takes away alignment slack in front of the game's regions.
+`dm/tools/sdk_patches.py`'s SDK-wide rules cut its `sdk` build (`f118ae1c2e7728471aaf1a0d58484968`, SDK 18.3.2, the build Absolum ships): the AddressRegionManager node area from 1 GB to 62 MB, and 2 MB alignment for regions of 4 MB and more, as SDK 20. The first two runs below had an older form of those cuts, regions of 1 GB and more aligned to 32 MB (a per-build row the SDK-wide rule has replaced); a third run with this profile's rewrite reached +33.65 GB of the alias region where the older cuts reached +33.75 GB: the rule only takes away alignment slack in front of the game's regions.
 
 `shader_groups` and `shader_note` are as the provisional profile wrote them (the note still says so): every `shader_*` key is in each shader's cache key, and these are the ones the game was played with.
 
@@ -40,6 +40,7 @@ Build ID of 1.01's `main` (first 16 hex digits, as cheat files name them): `AE90
 - Mac (M3 Pro, window), 24,600 frames: the median 300-frame window has frame time p50 33.31 ms and p95 35.06 ms; 13 of the 82 windows ran at 60 fps (p50 16.7 ms); the longest frame took 1.74 s.
 - iPhone19,4, 4,500 frames: the median window has p50 32.77 ms and p95 35.22 ms; 6 of the 15 windows ran at 60 fps; the longest frame took 1.06 s; thermal state 0 throughout.
 - Neither run printed a `[RED]` line, an unimplemented call or a shader key missing from the map, and neither crashed.
+- Mac, this profile's own rewrite (2026-11-02), 8,400 frames from a save into street fights: the median window p50 33.32 ms, 3 of 28 windows at 60 fps; peak 2.40 GB resident and 1.38 GB of GPU allocations; no crash, no unimplemented call, no shader key missing from the map. One red line, once, at frame 2614 as a new pipeline was made: `texture type mismatch: shader d303b2b1a0f401f7_b (stage 1) declares slot 134 as Metal type 5, texture ID 6493 is type 7 (NVN target 2, format 0x9a, Metal format 80); bound as is`, a 3D texture in a cube slot ([Open](#open)).
 
 ## Mac routes
 
@@ -57,7 +58,7 @@ General changes first needed here; each applies to every game:
 
 ## Open
 
-- A run with this profile's own rewrite: the SDK-wide `sdk` cuts above (2 MB alignment) instead of the older per-build ones the runs had.
+- The 3D texture bound in shader `d303b2b1a0f401f7_b`'s cube slot 134 (one red line in a fight): which pass it is, and whether the slot is read; the symptom index has the 2D-in-cube and 2D-in-3D cases, not this one. Nothing wrong was seen on screen.
 - A phone whose largest single reservation is about 6 GB: cut the game's 32 GB region and its pools to fit the 5 GB layout (the size read at `main+0x379938`, the 4 GB heap at `main+0x54eb0`, the pools at `main+0xbe4e0`). Not done: the iPhone19,4 needs none.
 - A prewarm list, recorded on the Mac (`DM_PSO_RECORD`) along a route.
 - The 9 geometry shaders are translated; no run checked whether a scene draws with them.

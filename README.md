@@ -302,6 +302,11 @@ Under a game, "60 fps with 1.2.0" means it runs at 60 fps (30 on the Switch) wit
 <td align="center" valign="top" width="33%"><img src="docs/images/hollow-knight.jpg" width="256" alt="Hollow Knight"><br><small><b><a href="dm/games/0100633007D48000/README.md">Hollow Knight</a></b></small></td>
 <td align="center" valign="top" width="33%"><img src="docs/images/triangle-strategy.jpg" width="256" alt="TRIANGLE STRATEGY"><br><small><b><a href="dm/games/0100CC80140F8000/README.md">TRIANGLE STRATEGY</a></b></small></td>
 </tr>
+<tr>
+<td align="center" valign="top" width="33%"><img src="docs/images/yakuza-kiwami.jpg" width="256" alt="Yakuza Kiwami"><br><small><b><a href="dm/games/0100C9801FEE6000/README.md">Yakuza Kiwami</a></b></small></td>
+<td></td>
+<td></td>
+</tr>
 </table>
 <!-- end of gallery -->
 
