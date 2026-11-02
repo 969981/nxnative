@@ -174,7 +174,7 @@ private struct LauncherView: View {
 @_cdecl("dm_show_launcher")
 public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @convention(c) () -> Void) -> Bool {
     let settings = SettingsFile.bundledSettings()
-    guard !settings.isEmpty || dm_users_count() > 1 else { return false }
+    guard !settings.isEmpty || dm_users_count() > 1 || dm_users_can_edit() != 0 else { return false }
     let model = LauncherModel(settings)
     if ProcessInfo.processInfo.environment["DM_LAUNCHER"] == "0" { fputs("launcher: off (DM_LAUNCHER=0)\n", stderr); model.applySaved(); return false }
     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()

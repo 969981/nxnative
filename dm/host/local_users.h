@@ -27,7 +27,9 @@ const dm_user_roster *dm_users(void);
 const dm_local_user *dm_user_find(const dm_user_uid *uid);
 const dm_local_user *dm_selected_user(void);
 
-// Pointers remain valid for the lifetime of this process. Invalid configuration has
+// The launcher edits and reads on one UI thread before guest start. Look up IDs
+// again after editing: a concurrent launcher's changes may reorder the roster.
+// Once the session starts, the roster and its pointers are immutable. Invalid configuration has
 // zero users and a diagnostic. Selection is locked by an explicit DM_USER_ID or at game start.
 int dm_users_count(void);
 const char *dm_users_id_at(int index);
@@ -36,6 +38,10 @@ int dm_users_selected_index(void);
 int dm_users_selection_locked(void);
 int dm_users_select_index(int index); // before game start; exports the ID to a child host
 const char *dm_users_error(void);     // NULL on success
+int dm_users_can_edit(void);
+// Launcher only. NULL rename_id creates and selects a new user. Renaming keeps the target ID.
+// Returns NULL on success or a diagnostic. A failed edit leaves the loaded roster untouched.
+const char *dm_users_edit(const char *rename_id, const char *nickname);
 int dm_users_begin_session(void);    // freezes selection, returns 0 on error
 int dm_users_write_json(FILE *out);  // discovery without loading game files; 1 on success
 

@@ -16,7 +16,7 @@ The README covers packing and playing. This page is for working on nxnative itse
 
 ## Local accounts and save storage
 
-The Mac and iOS launchers and the host share the roster reader in `dm/host/local_users.m`. The picker runs before guest execution. The host freezes the chosen identity at game start, and `hle_account.c` uses the roster for guest enumeration, handles and nicknames. `hle_fs.c` routes account mounts by their requested UID while device mounts retain the title's existing shared directory. The [frontend contract](frontends.md#local-users) specifies roster discovery, the JSON query, storage paths and cloud coverage. For hosts without a roster, the original local UID, nickname override and save paths still apply.
+The Mac and iOS launchers and the host share the roster reader in `dm/host/local_users.m`. Account creation, renaming and selection run in the launcher before guest execution. The host freezes the chosen identity at game start, and `hle_account.c` uses the roster for guest enumeration, handles and nicknames. `hle_fs.c` routes account mounts by their requested UID while device mounts retain the title's existing shared directory. The [frontend contract](frontends.md#local-users) specifies roster discovery, the JSON query, storage paths and cloud coverage. For hosts without a roster, the original local UID, nickname override and save paths still apply.
 
 ## Cheats
 

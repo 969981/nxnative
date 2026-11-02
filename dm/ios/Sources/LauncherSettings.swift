@@ -45,30 +45,54 @@ struct SettingsFile: Decodable {
     }
 }
 
+struct LauncherUser: Identifiable {
+    let id, nickname, label: String
+    let index: Int32
+
+    static func read() -> [LauncherUser] {
+        let users = (0..<dm_users_count()).map {
+            (name: String(cString: dm_users_nickname_at($0)), id: String(cString: dm_users_id_at($0)))
+        }
+        return users.enumerated().map { index, user in
+            let peers = users.filter { $0.name == user.name && $0.id != user.id }
+            var label = user.name
+            if !peers.isEmpty {
+                let suffix = user.id.suffix(8), short = "\(user.name) · \(suffix)"
+                let ambiguous = peers.contains { $0.id.suffix(8) == suffix } || users.contains { $0.name == short }
+                label = ambiguous ? "\(user.name) · \(user.id)" : short
+            }
+            return LauncherUser(id: user.id, nickname: user.name, label: label, index: Int32(index))
+        }
+    }
+}
+
 final class LauncherModel: ObservableObject {
     let settings: [Setting]
     let fixed: Set<String>      // set by an env file or by the launch environment: shown, not changed
     let fromLaunch: Set<String>   // of those, the ones the launch environment set (a front end's launch overrides, Xcode; DM_ENV_LAUNCH_KEYS from launcher.c or main.m)
     let ignoreSaved: Bool   // DM_SAVED_CHOICES=0: start from the defaults, and leave the saved choices as they are
-    let userLabels: [String] = {
-        let users = (0..<dm_users_count()).map {
-            (name: String(cString: dm_users_nickname_at($0)), id: String(cString: dm_users_id_at($0)))
-        }
-        return users.map { user in
-            let peers = users.filter { $0.name == user.name && $0.id != user.id }
-            guard !peers.isEmpty else { return user.name }
-            let suffix = user.id.suffix(8), short = "\(user.name) · \(suffix)"
-            if peers.contains(where: { $0.id.suffix(8) == suffix }) || users.contains(where: { $0.name == short }) {
-                return "\(user.name) · \(user.id)"
-            }
-            return short
-        }
-    }()
+    @Published private(set) var users = LauncherUser.read()
     let userLocked = dm_users_selection_locked() != 0
     @Published var selectedUser = dm_users_selected_index()
-    var personalSaveIsLocal: Bool {
-        guard let id = dm_users_id_at(selectedUser) else { return false }
-        return String(cString: id) != DM_LEGACY_USER_ID
+    var pickedUser: LauncherUser? { users.first { $0.index == selectedUser } }
+    var personalSaveIsLocal: Bool { pickedUser.map { $0.id != DM_LEGACY_USER_ID } ?? false }
+    var canEditUsers: Bool { dm_users_can_edit() != 0 }
+    var canCreateUser: Bool { canEditUsers && users.count < Int(DM_MAX_LOCAL_USERS) }
+
+    static func nicknameProblem(_ name: String) -> String? {
+        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Enter a nickname." }
+        if name.utf8.count > 32 { return "Use a nickname of 32 UTF-8 bytes or fewer." }
+        if name.rangeOfCharacter(from: .controlCharacters) != nil { return "Remove line breaks and control characters from the nickname." }
+        return nil
+    }
+
+    func editUser(renameID: String?, nickname: String) -> String? {
+        if let problem = Self.nicknameProblem(nickname) { return problem }
+        if let id = renameID, !users.contains(where: { $0.id == id }) { return "Choose a user from the list to rename." }
+        if let problem = dm_users_edit(renameID, nickname) { return String(cString: problem) }
+        users = LauncherUser.read()
+        selectedUser = dm_users_selected_index()
+        return nil
     }
     @Published var values: [String: String] = [:]
 

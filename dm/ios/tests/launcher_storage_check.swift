@@ -5,15 +5,34 @@ import Foundation
     static func main() {
         var failed = 0
         func expect(_ c: Bool, _ what: String) { print((c ? "PASS " : "FAIL ") + what); if !c { failed += 1 } }
+        if CommandLine.arguments[1] == "--edit-users" {
+            let file = URL(fileURLWithPath: CommandLine.arguments[2])
+            expect(dm_users_prepare_file(file.deletingLastPathComponent().path, file.path) != 0, "first launch prepares the default user file")
+            let m = LauncherModel([])
+            expect(m.canEditUsers && m.canCreateUser && m.users.map(\.label) == ["Player"], "Create and Rename are available for the implicit Player")
+            for invalid in ["  ", "one\0two", String(repeating: "é", count: 17)] {
+                expect(m.editUser(renameID: nil, nickname: invalid) != nil, "invalid names are refused before conversion to a C string")
+            }
+            expect(m.editUser(renameID: "53574e415449564578626c0000000001\0extra", nickname: "Other") != nil, "a malformed rename target cannot become a different C string")
+            expect(!FileManager.default.fileExists(atPath: file.path), "invalid names do not create a file")
+            expect(m.editUser(renameID: nil, nickname: "Bob") == nil && m.users.map(\.label) == ["Player", "Bob"] && m.selectedUser == 1, "Create refreshes the picker and selects the new account")
+            m.selectedUser = 0  // the picker selection may differ from the last user committed in the registry
+            expect(m.editUser(renameID: m.pickedUser?.id, nickname: "Alice") == nil && m.users.map(\.label) == ["Alice", "Bob"] && m.selectedUser == 0, "Rename targets the pending choice by ID and keeps its position")
+            for index in 3...8 { expect(m.editUser(renameID: nil, nickname: "Player \(index)") == nil, "creating player \(index)") }
+            expect(!m.canCreateUser && m.canEditUsers, "a full roster keeps Rename available")
+            m.selectedUser = 1
+            expect(m.editUser(renameID: nil, nickname: "Ninth") != nil && m.selectedUser == 1 && m.users.count == 8, "a failed edit preserves the pending selection and list")
+            exit(failed == 0 ? 0 : 1)
+        }
         if CommandLine.arguments[1] == "--duplicate-names" {
             let m = LauncherModel([])
-            expect(m.userLabels == ["Alex · 000000000000000000000000deadbeef", "Alex · 010000000000000000000000deadbeef", "Alex · abcdef01", "Bob"], "only duplicate nicknames receive distinguishing picker labels, including IDs with matching suffixes")
+            expect(m.users.map(\.label) == ["Alex · 000000000000000000000000deadbeef", "Alex · 010000000000000000000000deadbeef", "Alex · abcdef01", "Bob"], "only duplicate nicknames receive distinguishing picker labels, including IDs with matching suffixes")
             expect(String(cString: dm_users_nickname_at(0)) == "Alex" && String(cString: dm_users_nickname_at(1)) == "Alex", "guest nicknames stay verbatim")
             exit(failed == 0 ? 0 : 1)
         }
         if CommandLine.arguments[1] == "--users" {
             let m = LauncherModel([])
-            expect(m.userLabels == ["Alice", "Bob"], "the picker offers nicknames in manifest order")
+            expect(m.users.map(\.label) == ["Alice", "Bob"], "the picker offers nicknames in manifest order")
             if getenv("DM_USER_ID") != nil {
                 expect(m.userLocked && m.selectedUser == 1, "a launch override shows the locked user in the picker")
                 expect(m.personalSaveIsLocal, "a secondary user's cloud-save note says their personal save stays local")

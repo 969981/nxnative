@@ -150,7 +150,7 @@ static void cloud_saves_folder(void) {
     if (v) CFRelease(v);
 }
 
-// --list-users and a game launch must resolve the same env files, manifest and selection.
+// User management and a game launch must resolve the same env files, manifest and selection.
 static const char *load_launch_env(const char *sup, const char *dm, const char *home, int quiet) {
     char p[PATH_MAX];
     CFArrayRef rules = setting_rules();
@@ -164,10 +164,22 @@ static const char *load_launch_env(const char *sup, const char *dm, const char *
 }
 
 int main(int argc, char **argv) {
-    int list_users = 0, no_window = 0;
+    int manage_users = 0, no_window = 0, bad_args = 0;
+    const char *rename_id = NULL, *nickname = NULL;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--list-users")) list_users = 1;
-        if (!strcmp(argv[i], "--no-launcher")) no_window = 1;
+        const char *arg = argv[i];
+        if (!strcmp(arg, "--no-launcher")) { no_window = 1; continue; }
+        int create = !strcmp(arg, "--create-user"), rename = !strcmp(arg, "--rename-user");
+        if (manage_users || (!create && !rename && strcmp(arg, "--list-users"))) { bad_args = 1; continue; }
+        manage_users = 1;
+        if (rename && i + 1 < argc) rename_id = argv[++i];
+        if (create || rename) {
+            if (i + 1 < argc) nickname = argv[++i]; else bad_args = 1;
+        }
+    }
+    if (manage_users && bad_args) {
+        fprintf(stderr, "Usage: nxnative --list-users | --create-user NAME | --rename-user ID NAME\n");
+        return 2;
     }
     char self[PATH_MAX], exe[PATH_MAX]; uint32_t n = sizeof self;
     if (_NSGetExecutablePath(self, &n) || !realpath(self, exe)) return 1;
@@ -180,15 +192,23 @@ int main(int argc, char **argv) {
     info_string("DMRomfsMarker", marker, sizeof marker); info_string("DMLanguage", lang, sizeof lang);
     if (!info_string("DMTitleID", id, sizeof id) || strchr(id, '/')) {
         const char *msg = "This app has no title ID in its Info.plist (DMTitleID): pack it again with build_ipa_from_nsp.py --platform mac-app.";
-        if (list_users) fprintf(stderr, "[RED] launcher: %s\n", msg); else alert(name, msg);
+        if (manage_users) fprintf(stderr, "[RED] launcher: %s\n", msg); else alert(name, msg);
         return 1;
     }
-    const char *home = getenv("HOME"); if (!home || !*home) return 1;
+    const char *home = getenv("HOME"); if (!home || !*home) { fprintf(stderr, "[RED] launcher: HOME is unset\n"); return 1; }
     char sup[PATH_MAX]; snprintf(sup, sizeof sup, "%s/Library/Application Support/nxnative/%s", home, id);
-    if (list_users) {
+    if (manage_users) {
         const char *error = load_launch_env(sup, dm, home, 1);
+        if (!error && nickname) {
+            if (!getenv("DM_USERS_FILE") && dm_users_can_edit()) {   // the first edit, before any game has created Application Support
+                snprintf(p, sizeof p, "%s/Library/Application Support/nxnative", home);
+                mkdirs(p);
+            }
+            error = dm_users_edit(rename_id, nickname);
+        }
         if (error) { fprintf(stderr, "[RED] launcher: %s\n", error); return 1; }
-        return dm_users_write_json(stdout) ? 0 : 1;
+        if (!dm_users_write_json(stdout)) { fprintf(stderr, "[RED] launcher: could not write the local user list\n"); return 1; }
+        return 0;
     }
     struct stat st; snprintf(p, sizeof p, "%s/romfs.img", res);
     int valid_romfs;
@@ -221,7 +241,7 @@ int main(int argc, char **argv) {
     if (shown < 0) return 1;
     if (shown == 2) saved_choices();
     // Pass an explicit ID even for a no-window start: the same user stays selected if the roster is reordered before the host reads it.
-    if (getenv("DM_USERS_FILE") && !dm_users_selection_locked() && !dm_users_select_index(dm_users_selected_index())) {
+    if (dm_users()->configured && !dm_users_selection_locked() && !dm_users_select_index(dm_users_selected_index())) {
         fprintf(stderr, "[RED] launcher: could not pass the selected local user to the host\n"); return 1;
     }
     cloud_saves_folder();

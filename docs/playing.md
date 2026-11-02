@@ -8,7 +8,7 @@ How to build and install a game: [README](../README.md#how-to-play).
 
 ## Local players
 
-To share a game, place a [local user roster](frontends.md#local-users) in `~/Library/Application Support/nxnative/users.json` on Mac, or in the game app’s `Documents/users.json` on iPhone or iPad. You can add the file after building the app. With two or more users, choose **Who’s playing?** in the game’s launcher before pressing **Play**. Keep the original player's ID from the example to continue an existing save, and give each additional player a different ID. Each player has their own account save. Games that keep common device data, such as an Animal Crossing island, share that data. Additional players’ personal saves stay on this device.
+In the built Mac or iPhone/iPad game launcher, choose **Create User…**, enter a name and press **Create**. The original **Player** keeps their progress. Choose **Who's playing?** before Play, or use **Rename User…** to change the selected player’s name. A rename keeps the same account and saves. Up to eight players can share a roster. Each has their own account saves; games can also keep device-wide data, such as a shared Animal Crossing island. Additional players’ personal saves stay local.
 
 ## Touch controls
 

@@ -594,6 +594,44 @@ class App(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(result.stdout, '')
 
+    def test_manage_local_users_on_fresh_install(self):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as t:
+            home = Path(t)
+            exe = self.app / 'Contents/MacOS/nxnative'
+            def command(*args, **env):
+                return subprocess.run([exe, *args], env=dict(HOME=t, PATH='/usr/bin:/bin', DM_LAUNCHER='0', **env), capture_output=True, text=True, timeout=20)
+            result = command('--create-user', 'Ada')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            created = json.loads(result.stdout)
+            uid = created['selected']
+            self.assertEqual(created['users'][1], {'id': uid, 'nickname': 'Ada'})
+            result = command('--rename-user', uid, 'Ada Lee')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            renamed = json.loads(result.stdout)
+            self.assertEqual((renamed['selected'], renamed['users'][1]), (uid, {'id': uid, 'nickname': 'Ada Lee'}))
+            self.assertEqual(json.loads(command('--list-users').stdout)['users'], renamed['users'])
+            roster = home / 'Library/Application Support/nxnative/users.json'
+            saved = roster.read_bytes()
+            for args in [('--create-user',), ('--rename-user', uid), ('--rename-user', 'bad', 'Other'), ('--create-user', 'Extra', 'operand')]:
+                error = command(*args)
+                self.assertNotEqual(error.returncode, 0)
+                self.assertEqual(error.stdout, '')
+                self.assertTrue(error.stderr)
+            self.assertNotEqual(command('--rename-user', uid, 'Override', DM_USER_ID=uid).returncode, 0)
+            self.assertEqual(roster.read_bytes(), saved)
+            self.assertFalse((roster.parent / TID).exists())
+            self.assertFalse((home / 'Library/Logs').exists())
+            self.assertFalse((home / 'host_run.txt').exists())
+            support = roster.parent / TID
+            support.mkdir()
+            (support / 'env.txt').write_text('DM_USERS_FILE=other.json\n')
+            (support / 'other.json').write_bytes(saved)
+            result = command('--rename-user', uid, 'Other roster')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads((support / 'other.json').read_bytes())['users'][1]['nickname'], 'Other roster')
+            self.assertEqual(roster.read_bytes(), saved)
+
+
     def test_exit_without_a_synced_mount_keeps_cloud_untouched(self):
         with tempfile.TemporaryDirectory(dir=TEST_ROOT) as t:
             save, cloud = Path(t) / 'save', Path(t) / 'cloud'
@@ -657,7 +695,7 @@ class App(unittest.TestCase):
             hidden = self.tmp.with_name(self.tmp.name + '.unavailable')
             try:
                 self.tmp.rename(hidden)
-                p = subprocess.run([moved / 'Contents/MacOS/nxnative'], env=dict(HOME=str(home), PATH='/usr/bin:/bin'), capture_output=True, timeout=30)
+                p = subprocess.run([moved / 'Contents/MacOS/nxnative', '--no-launcher'], env=dict(HOME=str(home), PATH='/usr/bin:/bin'), capture_output=True, timeout=30)
                 self.assertEqual(p.returncode, 7)
                 ran = (home / 'host_run.txt').read_text()
                 self.assertIn(f'argv1={moved}/Contents/Resources/dm\n', ran)

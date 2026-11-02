@@ -18,7 +18,7 @@ When you change a setting and tap **Play**, the app keeps your choice, also when
 
 A Mac app carries the same list (`Contents/Resources/dm/launcher.json`), without the iPhone's own Frame-rate counter and Touch feedback, for a front end that starts the app with the chosen values ([Front ends](frontends.md)).
 
-With a [local user roster](frontends.md#local-users), the game's launcher offers **Who's playing?** before Play. An external launcher can select a user for this start. The choice controls the account the game opens and where it finds that person's save.
+Use **Create User…** or **Rename User…** in the launcher and choose **Who's playing?** before Play. See [Local players](playing.md#local-players).
 
 ## Game
 

@@ -54,6 +54,11 @@ class LauncherStorageTests(unittest.TestCase):
             env.pop('DM_USER_ID', None)
             r = subprocess.run([str(exe), '--duplicate-names'], capture_output=True, text=True, env=env, timeout=30)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            env = {k: v for k, v in os.environ.items() if k not in ('DM_USER_ID', 'DM_USERS_FILE', 'DM_NICK')}
+            edited = tmp / 'first-launch-users.json'
+            r = subprocess.run([str(exe), '--edit-users', str(edited)], capture_output=True, text=True, env=env, timeout=30)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(json.loads(edited.read_text())['users'][0], {'id': '53574e415449564578626c0000000001', 'nickname': 'Alice'})
 
 
 if __name__ == '__main__':

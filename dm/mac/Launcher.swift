@@ -188,7 +188,7 @@ enum LauncherWindowLayout {
 @_cdecl("dm_mac_launcher")
 public func dmMacLauncher() -> Int32 {
     let settings = SettingsFile.bundledSettings()
-    guard !settings.isEmpty || dm_users_count() > 1 else { return 2 }
+    guard !settings.isEmpty || dm_users_count() > 1 || dm_users_can_edit() != 0 else { return 2 }
     if (UserDefaults.standard.object(forKey: "window.show") as? Bool) == false && !NSEvent.modifierFlags.contains(.option) {
         fputs("launcher: settings window off (hold Option at launch to show it)\n", stderr)
         return 2

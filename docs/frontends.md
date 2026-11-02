@@ -61,7 +61,7 @@ Settings a player chose in a front end and wants kept, also for a start from Fin
 
 ## Local users
 
-A frontend can supply a roster, show the nicknames and pass the chosen ID to the built app. The game sees the same IDs through its account service. The built-in launcher also offers the choice before Play when the roster contains multiple users.
+A frontend can supply a roster, show the nicknames and pass the chosen ID to the built app. The game sees the same IDs through its account service. The built-in Mac and iOS launchers create and rename users as well as offering the choice before Play.
 
 `DM_USERS_FILE` names a UTF-8 JSON file. A built Mac app looks for `~/Library/Application Support/nxnative/users.json` by default, shared by its games. An iOS app looks in its own `Documents/users.json`. An explicit relative path in the launch environment or `env.txt` resolves against the Mac game's Application Support directory or the iOS app's Documents directory. A directly invoked `dmhost` takes its configuration from the environment and resolves relative paths against its working directory.
 
@@ -75,19 +75,23 @@ A frontend can supply a roster, show the nicknames and pass the chosen ID to the
 }
 ```
 
-The roster holds 1–8 users and fits in 16 KiB. Each ID is 32 hex digits (high 64-bit word first), nonzero, unique regardless of case. Generate an ID once, for example from a UUID with its hyphens removed, and retain it when renaming or reordering users. Nicknames are 1–32 UTF-8 bytes and exclude control characters. The legacy ID shown for Alice retains the original player's saves. Removing an entry leaves that user's files on disk. Editors should replace the file atomically. Changes apply at the next launch.
+The roster holds 1–8 users and fits in 16 KiB. Each ID is 32 hex digits (high 64-bit word first), nonzero, unique regardless of case. Generate an ID once, for example from a UUID with its hyphens removed, and retain it when renaming or reordering users. Nicknames are 1–32 UTF-8 bytes and exclude control characters. The legacy ID shown for Alice retains the original player's saves. Removing an entry leaves that user's files on disk. Built-in editors merge each edit with the current roster while holding an exclusive advisory lock on `<roster>.lock`, then replace the JSON file atomically. Changes apply immediately in the editing launcher and on subsequent launches elsewhere. A first edit materializes the original user's ID. A rename preserves the ID, save directory and other JSON fields. Prefer the launcher commands or the C bridge over independent file writes. If writing directly, take the same lock before reading or modifying the file.
 
 For the built Mac app, run its launcher with `--list-users` to include the app's normal `env.txt` files and roster discovery. For a raw host, provide the roster path explicitly. Either query exits before loading game files.
 
 ```sh
 "/path/to/Game.app/Contents/MacOS/nxnative" --list-users
+"/path/to/Game.app/Contents/MacOS/nxnative" --create-user "Robin"
+"/path/to/Game.app/Contents/MacOS/nxnative" --rename-user d78867e01fd44334a238078801be53ea "Robert"
 DM_USERS_FILE=/path/to/users.json dmhost --list-users
 DM_USERS_FILE=/path/to/users.json DM_USER_ID=d78867e01fd44334a238078801be53ea "/path/to/Game.app/Contents/MacOS/nxnative"
 ```
 
-The query writes one JSON object to stdout containing `version`, `users` (as above, IDs in lowercase), and `selected` (the effective ID). A malformed roster, unsupported version, unreadable explicit path or unknown selected ID produces a diagnostic and nonzero exit. The engine refuses to start a guest with invalid configuration. The default selection is the first listed user. An explicit `DM_USER_ID` fixes the selection for that launch. A choice made inside the app applies to the current launch. An external frontend can remember a choice by ID and pass it on future starts. The guest user-selector applet returns the chosen ID. If the game excludes that user or requires a linked online account, the configured selection fails. Games can also enumerate and open other local users explicitly.
+The query writes one JSON object to stdout containing `version`, `users` (as above, IDs in lowercase), and `selected` (the effective ID). Successful edits return the same object, with the created or renamed account selected for that invocation. Edits are refused when an external launch fixes the user with `DM_USER_ID`. A malformed roster, unsupported version, unreadable explicit path or unknown selected ID produces a diagnostic and nonzero exit. The engine refuses to start a guest with invalid configuration. The default selection is the first listed user. An explicit `DM_USER_ID` fixes the selection for that launch. A choice made inside the app applies to the current launch. An external frontend can remember a choice by ID and pass it on future starts. The guest user-selector applet returns the chosen ID. If the game excludes that user or requires a linked online account, the configured selection fails. Games can also enumerate and open other local users explicitly.
 
 For account saves the engine uses the UID the **game passes to the mount**, even if it differs from the launcher selection. The legacy account uses `DM_SAVE`. Every other account uses its sibling `<DM_SAVE>.user-<lowercase ID>`. Device data is shared across users of the title: a title that mounts both kinds keeps its device data in `<DM_SAVE>_device`; a device-save-only title keeps its existing `DM_SAVE` (for example, the Animal Crossing island). The existing cloud archive covers the legacy and shared device trees. Additional users' individual save directories are local and must be backed up separately. A frontend that transfers saves can identify them from the roster and these paths. Run one game process at a time against a title's save root, since its device save and transaction directories are shared.
+
+For embedded launchers, [local_users.h](../dm/host/local_users.h) provides the same account operations. Call `dm_users_edit(NULL, nickname)` to create a user, or pass the stable ID to rename one. Refresh the roster after a successful edit.
 
 ## Saved choices
 
