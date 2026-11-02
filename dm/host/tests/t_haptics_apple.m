@@ -134,6 +134,18 @@ static void test_dispatch_after(dispatch_time_t when, dispatch_queue_t target, d
 @implementation TestController
 @end
 static void drain(void) { dispatch_sync(queue, ^{}); dispatch_sync(queue, ^{}); }
+// A stand-in for IOHIDDeviceSetReport: records the report's first six bytes, waits for the gate when one is set
+static NSMutableArray<NSString *> *test_written;
+static dispatch_semaphore_t test_write_gate;
+static _Atomic bool test_writing;
+static IOReturn test_write_result = kIOReturnSuccess;
+static IOReturn test_pad_write(IOHIDDeviceRef dev, IOHIDReportType type, CFIndex id, const uint8_t *r, CFIndex n) {
+    (void)dev; assert(type == kIOHIDReportTypeOutput && id == r[0] && n >= 6);
+    atomic_store(&test_writing, true);
+    if (test_write_gate) dispatch_semaphore_wait(test_write_gate, DISPATCH_TIME_FOREVER);
+    [test_written addObject:[NSString stringWithFormat:@"%02x %02x %02x %02x %02x %02x", r[0], r[1], r[2], r[3], r[4], r[5]]];
+    return test_write_result;
+}
 static void advance(NSTimeInterval seconds) {
     uint64_t end = testTime + (uint64_t)llround(seconds * NSEC_PER_SEC);
     for (;;) {
@@ -161,6 +173,7 @@ static int made;   // engines the test factories made
 int main(void) { @autoreleasepool {
     queue = dispatch_queue_create("test.rumble", DISPATCH_QUEUE_SERIAL);
     dispatch_queue_set_specific(queue, &queue, &queue, NULL);
+    padQueue = dispatch_queue_create("test.rumble.hid", DISPATCH_QUEUE_SERIAL);
     timers = [NSMutableArray new];
     dm_haptics_init(apply, 1); drain();
     TestEngine *left = [TestEngine new], *right = [TestEngine new];
@@ -294,15 +307,35 @@ int main(void) { @autoreleasepool {
     // A DualShock 4 goes through its effects report only while its HID device is there; without one it keeps Core Haptics
     TestController *ds = [TestController new]; ds.haptics = [TestHaptics new]; ds.productCategory = GCProductCategoryDualShock4;
     dm_haptics_apple_controller(0, (id)ds); drain();
-    __block BOOL report = NO; dispatch_sync(queue, ^{ report = ds4[0].dev != NULL; });
+    __block BOOL report = NO; dispatch_sync(queue, ^{ report = pads_out[0] != nil; });
     if (!report) {
         send_pair(0.6, 0); drain();
         assert(ds.haptics.attempts == 1 && ds.haptics.engines[0].testPlayer.levels.lastObject.floatValue == 0.6f);
         send_pair(0, 0); drain();
     }
-    else assert(channels[0].count == 2 && [channels[0][0] isKindOfClass:DmDs4Channel.class] && ds.haptics.attempts == 0);
+    else assert(channels[0].count == 2 && [channels[0][0] isKindOfClass:DmPadChannel.class] && ds.haptics.attempts == 0);
     dm_haptics_apple_controller(0, nil); drain();
     assert(ds4_crc((const uint8_t *)"123456789", 9) == 0xCBF43926u);   // the report's CRC32 (IEEE, reflected)
+    // The Luna report: magnitudes 0-100 at bytes 4 (left) and 5 (right), as SDL sends it
+    uint8_t r[78]; assert(pad_report(PAD_LUNA, YES, (const uint8_t[2]){60, 20}, r) == 9);
+    assert(!memcmp(r, (const uint8_t[9]){0x03, 0x0F, 0, 0, 60, 20, 0xFF, 0x00, 0xEB}, 9));
+    // The reports go out on their own queue: levels set while one is out are merged into the next, and a device that times out gets no more
+    test_written = [NSMutableArray new]; test_write_gate = dispatch_semaphore_create(0);
+    pad_write = test_pad_write;
+    DmPadOutput *o = [DmPadOutput new]; o->kind = PAD_LUNA;
+    pad_set(o, (const uint8_t[2]){10, 0});   // blocks in the fake write until the gate opens
+    while (!test_writing) usleep(1000);
+    pad_set(o, (const uint8_t[2]){20, 0}); pad_set(o, (const uint8_t[2]){30, 5});
+    dispatch_semaphore_signal(test_write_gate); dispatch_semaphore_signal(test_write_gate);
+    dispatch_sync(padQueue, ^{});
+    assert(test_written.count == 2 && [test_written[0] isEqual:@"03 0f 00 00 0a 00"] && [test_written[1] isEqual:@"03 0f 00 00 1e 05"]);
+    pad_set(o, (const uint8_t[2]){30, 5}); dispatch_sync(padQueue, ^{});
+    assert(test_written.count == 2);   // unchanged levels are not sent again
+    test_write_result = kIOReturnTimeout;
+    pad_set(o, (const uint8_t[2]){0, 0}); dispatch_semaphore_signal(test_write_gate); dispatch_sync(padQueue, ^{});
+    test_write_result = kIOReturnSuccess;
+    pad_set(o, (const uint8_t[2]){40, 0}); dispatch_sync(padQueue, ^{});
+    assert(test_written.count == 3 && !atomic_load(&o->busy));   // nothing after the timeout
     dm_haptics_apple_shutdown();
-    puts("Apple haptics: channels, pulses, idle release, startup handlers, engine replacement, backoff, stale callbacks, plain players, level cutoff and the DualShock 4 route passed");
+    puts("Apple haptics: channels, pulses, idle release, startup handlers, engine replacement, backoff, stale callbacks, plain players, level cutoff and the HID report route (DualShock 4, Luna) passed");
 } }
