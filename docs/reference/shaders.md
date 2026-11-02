@@ -147,6 +147,21 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [Fire Emblem: Three Houses](../../dm/games/010055D009F78000/README.md) (the older KTGL).
 - **Note:** nine more shaders exist only at run time ([Built-in shaders compiled with the game's own GLSLC](#built-in-shaders-compiled-with-the-games-own-glslc)).
 
+### KTGL on NVN2: Switch 2 GLSLC outputs and LD_ / LI_ LINKDATA
+
+- **Symptom:** the split finds a few dozen of a KTGL Switch 2 game's shaders; the RDB entries' G2S containers yield nothing, and the language screen's programs name no packaged shader.
+- **Cause:** the Switch 2's GLSLC (output version 0x15.0x22) writes a longer output header: 0x18 bytes more (the output's length at +0x5c, the section count at +0x64), and each section header 8 bytes more (from +0xa8, 0x98 apart); a GPU code section holds an NVN2 control section. Pokémon Pokopia also keeps 618 GLSLC outputs in a LINKDATA pair named `LD_C0_R.BIN` / `LI_C0_R.IDX` (the same 32-byte entries as Three Houses' `DATA1.bin` / `DATA0.bin`), whose larger entries use 0x80000-byte zlib chunks.
+- **Fix:** `glslc_nvn2` reads that layout (`glslc_section(…, nvn2=True)`), a single-stage output labelled as the Switch 1 ones and several stages as one program; `linkdata_index` names the index of either pair; `kt_gz` takes its chunk size from the header (a power of two from 0x10000 to 0x100000).
+- **Found on:** Pokémon Pokopia (`0400A3A01EE4C000`): 99,207 shaders, 95,015 of them from one RDB asset (`0x38f972af`), 430 from `LD_C0_R`.
+- **Check:** `python3 dm/tools/tests/test_split_ktgl_nvn2.py`.
+
+### NVN2 shaders keyed without the bytes KTGL rewrites
+
+- **Symptom:** `[RED] shader … is not in the shader map` for 13 of the language screen's 27 programs, whose code is packaged.
+- **Cause:** KTGL rewrites +0x08 of a shader's NVN2 control section (0x0b → 0x11) and GLSLC's compile hash at +0x20 when it loads it; the code area stays byte for byte. `shader_key_skip` took only ranges past the Switch 1 control header (+0x30 on).
+- **Fix:** an NVN2 section's `shader_key_skip` may lie in its header, within +0x08..+0x2f (`game.py` checks the form; `key_ctl` and `same_shader` in `shader_split.py`, `keys_hash` in `hle_nvn.c`); none of the tools reads those bytes. Pokopia's profile skips `0x8+0x28`.
+- **Found on:** Pokémon Pokopia (`0400A3A01EE4C000`).
+
 ### GLSLC outputs in base64 in Heaps' shader cache
 
 - **Symptom:** the NSP script stops at `the shader split found no shaders in main or the RomFS` on a game whose `main` imports `glslcCompile` and whose RomFS is one or two `.pak` files.
@@ -856,11 +871,11 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ### Scaled shared memory addresses
 
-- **Symptom:** a compute shader's results in shared memory land in the wrong elements, or only part of its memory is cleared. An exposure histogram came back with its bins at about four times their index, the scene several stops too dark.
+- **Symptom:** a compute shader's results in shared memory land in the wrong elements, or only part of its memory is cleared. An exposure histogram came back with its bins at about four times their index, the scene several stops too dark; Mario Kart World's race picture came out in rainbow bands by depth slice.
 - **Cause:** LDS and STS with a register carry a stride at 78..79: 1 on all the game's 32-bit accesses, 2 on all its 64-bit ones, so the register counts elements of 4 or 8 bytes, not bytes. The decoder ignored it. Its ATOMS take byte offsets and have the field at 0.
-- **Fix:** `AStride` in `InstEmitAmpereMem.cs`, for LDL, LDS, STL, STS and ATOMS. A stride of 3, 16 bytes, is inferred from the pattern and does not occur in the game, and neither does a stride on ATOMS.
-- **Found on:** [Fire Emblem Fortune's Weave](../../dm/games/04007EF01F8AE000/README.md): 2 LDS and 2 STS with a register in its 16,888 shaders, all in the Lighting compute shaders; `d5bc99ffd183fa20` bounds its register by the element count (0x20) before `[R2 * 8]`. Other Switch 2 games share the decoder and have not been rebuilt with this.
-- **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_mem.py`.
+- **Fix:** `AStride` in `InstEmitAmpereMem.cs`, for LDL, LDS, STL, STS and ATOMS. Fire Emblem has no stride of 3 and none on ATOMS; Mario Kart World and Pokémon Pokopia have both. The field is a scale, not the access size: Mario Kart World's `f94552a2a2bff505` stores 8 bytes at `[R9.X16]` and 4 at `[R9.X16 + 8]` (a 12-byte record a thread), and Donkey Kong Bananza's upscaler (`7629d857a0a93833`) stores 8 bytes at `[i.X4 + 0x900]` with i = row × 40 + column × 2, a 20 × 32 tile of 8-byte elements that fits its 9,984 bytes of shared memory only at ×4.
+- **Found on:** [Fire Emblem Fortune's Weave](../../dm/games/04007EF01F8AE000/README.md): 2 LDS and 2 STS with a register in its 16,888 shaders, all in the Lighting compute shaders; `d5bc99ffd183fa20` bounds its register by the element count (0x20) before `[R2 * 8]`. Mario Kart World (`0400C3F00006E000`, no profile yet): its froxel shaders (`03923de3c507135e` and 35 variants) keep a float4 a thread at `[R.X16 + 0x500]`; read unscaled, the fog volume came out as 4×4-tile garbage. Pokémon Pokopia (`0400A3A01EE4C000`, no profile yet): 1,879 STS, 1,352 LDS and its histogram's ATOMS.POPC.INC (`e4ec13f79f9e0bd4`) have one. [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md) has 2,145 such accesses in 28 compute shaders, 24 of them its upscaler network (`agl_ndsr.pck`); not checked in play here.
+- **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_mem.py` (`Shared`, and `SharedScale` with one encoding of each factor from these games).
 
 ### IMAD.HI adds a register pair, and IMAD.X its carry
 
@@ -884,6 +899,27 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Fix:** `ATex` and `ATxq` in `InstEmitAmpereMem.cs`. The same bring-up adds, from their encodings in the game: 0x301 BREV and 0x2be its uniform form, 0x311 F2I.U64, 0x312 I2F of a 64-bit pair, 0x38c ATOMS, 0x38d ATOMS.CAS (Rd is 1 when it swapped, not the old value: the game's only use is a retry loop until Rd == 1), 0x992 MEMBAR, 0x9ab ERRBAR, and the carry out of IMAD.WIDE.
 - **Found on:** [Fire Emblem Fortune's Weave](../../dm/games/04007EF01F8AE000/README.md): 902 shaders had the wrong register at first; all 16,888 translate now. [Splatoon Raiders](../../dm/games/0400380020056000/README.md) lists 0x2be, 0x301 and 0x38c among its refused instructions; it has not been rebuilt with this.
 - **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_mem.py`.
+
+### HADD2 and HMUL2 with an immediate
+
+- **Symptom:** the GPU hangs (`kIOGPUCommandBufferCallbackErrorHang`) from the first 3D scene on, every frame.
+- **Cause:** `AHadd2` and `AHmul2` took their second source from `AHalfSrcs`, which orders B and C for HFMA2: in forms 2, 3 and 7 its B is the register field at bit 64. HADD2 / HMUL2 have their second source in the 32 slot in every form (the immediate in forms 2 / 4, the constant in 3 / 5, the uniform register in 6 / 7). Pokémon Pokopia's blur `8025c44e35cc19ca` steps its loop counter with `HADD2 R6, R6, 2, 2` (0x430, field 64 = R0) and added R0 instead, so the loop never ended.
+- **Fix:** `AHalfSecond` gives them the operand in the 32 slot, as `ASecond` does for FADD / FMUL.
+- **Found on:** Pokémon Pokopia (`0400A3A01EE4C000`, no profile yet), after the language select.
+- **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_alu.py` (`HalfImmediate`).
+
+### Ampere instructions new in Pokémon Pokopia and Mario Kart World
+
+- **Symptom:** `Ampere instruction <op> at 0x… is not implemented` (or `Ampere 03e at 0x…: F2FP.MERGE_C`, `Ampere 105 at 0x…: F2I from a float that is not 32-bit`) in the shader build: those shaders are left out and their draws and dispatches skipped.
+- **Fix:** each translated as its Maxwell counterpart would be:
+  - UP2UR (0x883): the uniform predicates into one byte of a uniform register, as P2R on the uniform datapath (Mario Kart World: 28 shaders, `UP2UR UR4, UPR, URZ, 0x1`).
+  - SURED (0x59f): SUATOM without the old value, its fields laid out as SUATOM's (Mario Kart World's `ab77eaee44cfef88`, SURED.ADD.U32 on a 2D image).
+  - ATOMS.POPC.INC (0xf8c): ATOMS's add of 1 with no source register (Pokopia's histogram `e4ec13f79f9e0bd4`); the decoder marks it as a shared-memory user, as 0x38c. ATOMS also takes the uniform register at 64, as STS.
+  - F2FP.F16.F32.MERGE_C (bit 78): b converted into the low half, c's low 16 bits the high half; Mesa NAK emits it with c = RZ for a plain f32 → f16 conversion.
+  - F2I from a half (source size 1): the half that bits 60..61 select, widened to f32 first.
+  - A 1D TLD with no type answer reads at (x & 0x3FFF, x >> 14), as Maxwell's TLDS Texture1DLodZero does with `Sample1DAs2D`: a 1D texture reads row 0 as before, and a texture buffer in the slot is bound as 16384-texel rows (`tbuf_as_2d`). Pokopia's KTGL reads its light and decal lists this way.
+- **Found on:** Pokémon Pokopia (`0400A3A01EE4C000`, no profile yet) and Mario Kart World (`0400C3F00006E000`, no profile yet).
+- **Check:** `DMSH_TEST_XLATE=<translator> python3 dm/gfx/tests/test_dmsh_ampere_alu.py` and `test_dmsh_ampere_mem.py`, on each game's encoding.
 
 ### Ampere HMMA through simdgroup_matrix
 
