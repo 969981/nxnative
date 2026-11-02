@@ -9,6 +9,7 @@
 #include <TargetConditionals.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <dispatch/dispatch.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -444,10 +445,10 @@ done:
 }
 
 // ---------- the host: the first mount, the sender, flushes ----------
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER, g_mount_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static _Atomic int g_on;
-static int g_mounted, g_want, g_busy, g_failed;   // the mount ran; a send asked for without a Commit (the mount found this save newer, a flush); a send running; the last one failed
+static int g_want, g_busy, g_failed;   // a send asked for without a Commit (the mount found this save newer, a flush); a send running; the last one failed
 static uint64_t g_commits, g_sent;                // Commits seen; the Commits the last send covered
 static char g_save[PATH_MAX], g_title[24], g_cloud[PATH_MAX];
 
@@ -536,7 +537,10 @@ static int sync_root(const char *save, char out[PATH_MAX]) {
     }
     return 1;
 }
-static void mount_once(const char *save, const char *title) {
+struct mount_args { const char *save, *title; };
+static void mount_once(void *context) {
+    const struct mount_args *args = context;
+    const char *save = args->save, *title = args->title;
     char cloud[PATH_MAX], tmp[PATH_MAX], theirs[PATH_MAX], base[SS_HASH + 1], kept[PATH_MAX], t[32];
     ss_meta mine, other; memset(&other, 0, sizeof other);
     if (!cloud_file(title, cloud, sizeof cloud)) return;
@@ -580,9 +584,9 @@ static void mount_once(const char *save, const char *title) {
 }
 
 void save_sync_mount(const char *save, const char *title) {   // the first mount does it; a second one (the device save) waits for it
-    pthread_mutex_lock(&g_mount_mu);
-    if (!g_mounted) { g_mounted = 1; mount_once(save, title); }
-    pthread_mutex_unlock(&g_mount_mu);
+    static dispatch_once_t once;
+    struct mount_args args = {save, title};
+    dispatch_once_f(&once, &args, mount_once);
 }
 
 void save_sync_committed(void) {

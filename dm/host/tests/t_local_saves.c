@@ -22,16 +22,16 @@ static const uint64_t bob[2] = {2, 0x1234567890abcdef};
 static int write_guest(const char *path, const char *value) {
     Result r = h_fs_CreateFile(path, 0);
     if (r && r != RES_PATH_EXISTS) return 0;
-    uint64_t h; size_t len = strlen(value);
-    if (h_fs_OpenFile(&h, path, MODE_WRITE)) return 0;
+    uint64_t h = UINT64_MAX; size_t len = strlen(value);
+    if (h_fs_OpenFile(&h, path, MODE_WRITE) || h == UINT64_MAX) return 0;
     r = h_fs_SetFileSize(h, (int64_t)len);
     if (!r) r = h_fs_WriteFile(h, 0, value, len, NULL);
     h_fs_CloseFile(h);
     return !r;
 }
 static int guest_has(const char *path, const char *value) {
-    uint64_t h; char buf[64]; size_t got = 0;
-    if (h_fs_OpenFile(&h, path, MODE_READ)) return 0;
+    uint64_t h = UINT64_MAX; char buf[64]; size_t got = 0;
+    if (h_fs_OpenFile(&h, path, MODE_READ) || h == UINT64_MAX) return 0;
     Result r = h_fs_ReadFile(&got, h, 0, buf, sizeof buf);
     h_fs_CloseFile(h);
     return !r && got == strlen(value) && !memcmp(buf, value, got);

@@ -98,8 +98,10 @@ static const char *seed(NSString *src_parent, NSString *base, NSString *root, NS
 }
 
 static const char *prepare(const char *root, const char *title_id, const char *source_save, char *out, size_t capacity) {
-    if (!title_id || strlen(title_id) != 16 || strspn(title_id, "0123456789abcdefABCDEF") != 16)
-        return "The game has no valid title ID.";
+    NSString *title_component = nil;
+    if (title_id && strlen(title_id) == 16 && strspn(title_id, "0123456789abcdefABCDEF") == 16)
+        title_component = @(title_id).uppercaseString;
+    if (!title_component) return "The game has no valid title ID.";
     NSString *parent = canonical_dir(root);
     if (!parent) return "The selected save folder is unavailable.";
     NSString *src = source_save && source_save[0] == '/' ? from_path(source_save) : nil;
@@ -111,7 +113,7 @@ static const char *prepare(const char *root, const char *title_id, const char *s
             [child hasPrefix:[base stringByAppendingString:@"_device."]] || [child isEqualToString:[base stringByAppendingString:@"-backups"]])
             return "Choose a top-level folder outside the previous saves and working directories.";
     }
-    NSString *title = [parent stringByAppendingPathComponent:@(title_id).uppercaseString];
+    NSString *title = [parent stringByAppendingPathComponent:title_component];
     NSString *save = [title stringByAppendingPathComponent:@"save"];
     const char *target = save.fileSystemRepresentation;
     // hle_fs also needs room for a secondary UID and its rollback working directory.
