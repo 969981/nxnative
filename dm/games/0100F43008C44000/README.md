@@ -25,7 +25,7 @@ Trinity's selector at `main+0x1b29660` reads a signed minimum interval from its 
 
 Original-byte assertions and the main build ID guard every fixed patch site. The frame-step state page is reserved before the appended patch area is aligned; unregistered builds and modules without a frame step keep their original layout.
 
-**Open: frame-time tail.** A historical comparison of main `372a8d8a0404` with candidate `68d75dfab2f9` at target 30 increased frame p99 from 37.6 to 52.3 ms (+39.1%). Both runs had unrelated compiler load, so the increase cannot yet be attributed to load or to the patch. An isolated comparison is required before treating this change as a performance pass; the PR remains a draft.
+**Open: frame-time tail.** A historical comparison of main `372a8d8a0404` with candidate `68d75dfab2f9` at target 30 increased frame p99 from 37.6 to 52.3 ms (+39.1%). Both runs had unrelated compiler load, so the increase cannot yet be attributed to load or to the patch. Independent testing at the 30 fps cap is still needed to determine the cause.
 
 Historical station-arrival observations on an M2 Max showed a title screen at 60 fps but station GPU work near 27 ms, usually holding adaptive 30 fps. Native clock measurements tracked real elapsed time during the tested drops. The cap does not guarantee sustained 60 fps.
 
