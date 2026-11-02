@@ -95,6 +95,42 @@ class Plan(unittest.TestCase):
             funcs, layer = f if isinstance(f, tuple) else (f, False)
             (self.d / f'{key}{suf}.metallib').write_bytes(metallib(funcs, layer))
 
+    def test_prepared_inputs_share_reads_and_keep_serial_results(self):
+        self.assertTrue(hasattr(po, 'Inputs'), 'concurrent PSO preparation is not implemented')
+        self.shader('v', {}, {'_b': [('main0', False)]})
+        self.shader('f', {}, {'_b': [('main0', False)]})
+        self.shader('primitive', {'raster': {'primitive_id': 1}}, {'_b': [('main0', False)]})
+        pairs = [('v', 'f'), ('v', 'f'), ('gone', 'f'), ('v', 'primitive')]
+        prepared = po.Inputs(self.d, workers=3)
+        bases, rest, left = po.plan(self.d, CHAIN, pairs, False, inputs=prepared)
+        self.assertNotIn('primitive_b', prepared.libraries)
+        expected = po.library_digest(self.d, bases)
+        # After preparation the libraries need not be reopened for the digest.
+        for p in self.d.glob('*.metallib'): p.unlink()
+        self.assertEqual(po.library_digest(self.d, bases, inputs=prepared), expected)
+        self.assertEqual(bases, [('v_b', 'main0', 'f_b', 'main0')])
+        self.assertEqual(rest, [])
+        self.assertEqual(left, {'reflection': 1, 'stage inputs': 0, 'library': 0, 'layer': 0, 'primitive ID': 1, 'entry': 0})
+
+    def test_preparation_worker_count_does_not_change_plan_or_hash(self):
+        self.assertTrue(hasattr(po, 'Inputs'), 'concurrent PSO preparation is not implemented')
+        self.shader('v', {}, {'_b': [('main0', False)]})
+        self.shader('layer', {}, {'_b': ([('main0', False)], True)})
+        self.shader('f', {}, {'_b': [('main0', False)]})
+        self.shader('constant', {}, {'_b': [('main0', True)]})
+        self.shader('bad', {}, {'_b': [('main0', False)]})
+        (self.d / 'bad_b.metallib').write_bytes(b'broken')
+        got = []
+        for workers in (1, 4):
+            inputs = po.Inputs(self.d, workers)
+            result = po.plan(self.d, CHAIN, [('v', 'f'), ('layer', 'f'), ('v', 'constant'), ('bad', 'f')], False, inputs=inputs)
+            got.append((result, po.library_digest(self.d, result[0], inputs=inputs)))
+        self.assertEqual(got[0], got[1])
+        self.assertEqual(got[0][0][0], [('v_b', 'main0', 'f_b', 'main0')])
+        self.assertEqual(got[0][0][1], [('v', 'constant')])
+        self.assertEqual(got[0][0][2]['library'], 1)
+        self.assertEqual(got[0][0][2]['layer'], 1)
+
     def test_bases_rest_and_left_out(self):
         vz = [('main0', False), ('main0_z', False)]
         self.shader('pull', {'entry_z': 'main0_z', 'pull': {'entry': 'main0'}, 'vertex_inputs': [{'location': 0}]}, {'_b': vz, '_bp': vz})

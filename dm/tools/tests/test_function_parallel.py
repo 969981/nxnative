@@ -17,6 +17,7 @@ from capstone.arm64 import ARM64_OP_IMM, ARM64_OP_MEM, ARM64_OP_REG
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
 import nso_asm
+import rewrite_jobs
 
 
 class FunctionAnalysis(unittest.TestCase):
@@ -26,7 +27,7 @@ class FunctionAnalysis(unittest.TestCase):
         self.addCleanup(sys.modules.pop, self.scope.__name__, None)
         d = self.scope.__dict__
         d.update({k: v for k, v in vars(nso_asm).items() if not k.startswith('__')})
-        d.update(re=re, struct=struct, multiprocessing=multiprocessing, WORKERS=2, BIG_FN=0x40000, IMG=bytearray(0x21000),
+        d.update(re=re, struct=struct, multiprocessing=multiprocessing, rewrite_jobs=rewrite_jobs, WORKERS=2, BIG_FN=0x40000, IMG=bytearray(0x21000),
                  signal=signal, jumps={}, tabjumps={}, ARM64_OP_IMM=ARM64_OP_IMM, ARM64_OP_MEM=ARM64_OP_MEM, ARM64_OP_REG=ARM64_OP_REG)
         d['md'] = Cs(CS_ARCH_ARM64, CS_MODE_ARM); d['md'].detail = True
         defs: list[ast.stmt] = [n for n in tree.body if isinstance(n, ast.FunctionDef) or isinstance(n, ast.Assign)

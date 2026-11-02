@@ -215,12 +215,18 @@ class Nvn(Base):
             self.build(True); self.assertEqual(len(self.ran), 1)
             self.build(True); self.assertEqual(self.ran, [])
 
-    def test_shader_watch_finishes_extra_pairs_last(self):
+    def test_shader_watch_counts_completions_out_of_order(self):
         (self.tmp / 'shader_map.tsv').write_text('p.bin\t0\tvs\ta\tsrc\np.bin\t1\tps\tb\tsrc\np.bin\t2\tvs\tc\tsrc\n')
         (self.tmp / 'shader_pairs.tsv').write_text('c\tb\n')
         pso = self.tmp / 'pso_pairs.tsv'; pso.write_text('a\tb\n')
         watch = nsp.ShaderWatch(self.g, self.tmp, self.tmp, pso)
-        self.assertEqual(list(watch.pos), ['b', 'a', 'c'])
+        watch.t1 = 0
+        (self.tmp / 'c_b.json').write_text('{}')
+        self.assertEqual(watch()['done'], 1)   # the last vertex can finish before unrelated shaders
+        (self.tmp / 'b_b.json').write_text('{}')
+        self.assertEqual(watch()['done'], 2)
+        (self.tmp / 'a_b.json').write_text('{}')
+        self.assertEqual(watch()['done'], 3)
 
 
 class EnvFile(Base):

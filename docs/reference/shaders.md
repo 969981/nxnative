@@ -503,6 +503,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ## Translation
 
+### Translation batches delay shader compilation
+
+- **Symptom:** a first shader build waits for every translator process before compiling any MSL, then waits for every unpaired shader before compiling paired vertices.
+- **Cause:** static translator chunks and two global finishing phases impose barriers beyond the vertex shader's actual pixel dependencies.
+- **Fix:** `dmsh_schedule.py` schedules bounded translation batches and ready finishing jobs on one `J` worker budget. A paired vertex becomes ready after its own pixel jobs finish publishing their sources, including failed-job handling; returned results keep the original order. The pinned translator binary is unchanged. Progress counts published shaders instead of the highest ordered key, since completion order now varies.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-scheduling-measurements). Tests cover overlap, dependency publication, failed/cached dependencies, concurrency bounds, single-worker progress and cycles.
+
 ### Tested tools and compiler-specific shader caches
 
 - **Symptom:** a shader build accepts tools that differ from `dmsh_chain.lock`; after an override build, returning to the tested Metal compiler can still restore the override's libraries.
@@ -1215,6 +1222,13 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Found on:** [Well Dweller](../../dm/games/0100217023F6C000/README.md), whose lighting programs were the missing ones.
 
 ## Pipelines and caches
+
+### Offline pipeline input preparation rereads libraries serially
+
+- **Symptom:** preparing a large pipeline archive spends time opening reflection and library files before starting `metal-tt`.
+- **Cause:** planning reads function headers and layer markers separately, and the archive cache key later rereads the selected libraries for SHA-256.
+- **Fix:** bounded input readers prepare unique reflection records and libraries. Each library read supplies its function metadata, layer marker and digest; only that small metadata remains in memory. Pair selection, skip counts, descriptor order and sorted digest reduction remain deterministic. `--jobs` controls reader concurrency; the default is at most eight cores. This changes preparation, not `metal-tt`'s compiler scheduling.
+- **Found on:** [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md#first-build-scheduling-measurements). Tests compare serial and concurrent preparation, missing/malformed inputs and reuse of prepared digests without reopening libraries.
 
 ### A compile that does not return stalls every flush and draw
 

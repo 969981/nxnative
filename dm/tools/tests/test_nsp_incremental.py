@@ -753,6 +753,8 @@ class RewriteWorkers(Base):
                      mock.patch.object(nsp.subprocess, 'Popen', return_value=mock.Mock(returncode=0, poll=lambda: 0)) as popen:
                     nsp.rewrite(Path(sys.executable), REPO, self.ex / 'ExeFS', out, env, self.tmp / 'logs', g)
                 self.assertEqual(popen.call_args.kwargs['env']['DM_REWRITE_J'], expected)
+                self.assertEqual('DM_REWRITE_BUDGET' in popen.call_args.kwargs['env'], not bool(value))
+                self.assertFalse((out / '.workers').exists())
                 self.assertEqual(env['DM_REWRITE_J'], value)
 
     def test_invalid_workers_fail_before_collecting_modules(self):

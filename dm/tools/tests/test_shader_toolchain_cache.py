@@ -3,7 +3,6 @@ Exercise the builder's real key/restore functions without game files or Xcode.
 """
 import ast
 import collections
-import concurrent.futures as cf
 import hashlib
 import importlib.util
 import json
@@ -25,6 +24,7 @@ TOOLS = REPO / 'dm/gfx/tools'
 sys.path.insert(0, str(TOOLS))
 import dmsh_chain  # noqa: E402
 import dmsh_mtlcache  # noqa: E402
+import dmsh_schedule  # noqa: E402
 
 spec = importlib.util.spec_from_file_location('nsp_toolchain_cache', REPO / 'scripts/build_ipa_from_nsp.py')
 assert spec and spec.loader
@@ -228,9 +228,9 @@ class ShaderCache(unittest.TestCase):
             self.ns['publish_cache'](key, key + '-digest', 'rule', 'source')
             return key, 'ok', '', refl
 
-        phase = next(n for n in self.tree.body if isinstance(n, ast.With) and any(
-            isinstance(s, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'res' for t in s.targets) for s in n.body))
-        self.ns.update(cf=cf, NJ=1, keys=keys, fin=finish_key)
+        phase = next(n for n in self.tree.body if isinstance(n, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == 'res' for t in n.targets))
+        self.ns.update(dmsh_schedule=dmsh_schedule, NJ=1, keys=keys, misses=keys, xl=lambda batch: None, fin=finish_key)
         exec(compile(ast.Module(body=[phase], type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), self.ns)
         self.assertEqual(built, [pixel, vertex])
         self.assertIn('dm_pad7 [[user(locn7)]]', (out / (vertex + '_b.metal')).read_text())
