@@ -244,6 +244,8 @@ static void reinterpret_image_case(int tid, int implicit, int packaged) {
     else [base getBytes:px bytesPerRow:4 fromRegion:MTLRegionMake2D(0,0,2,1) mipmapLevel:0];
     int z=volume?2:0;CHECK(px[z]==0x7531 && px[z+1]==0x8642,"R16 image stores reverse-convert back to packed canonical storage");
     if(volume)CHECK(px[0]==0x1248 && px[1]==0x00f0,"3D image store preserves the other depth plane");
+    // base is retained by serial_put (directly or through NvPkg); mtl_tex_release below calls serial_del/hm_del_id to balance the C hash's retain.
+    // NOLINTNEXTLINE(clang-analyzer-osx.cocoa.RetainCount)
     CHECK(packed16_canonical(image)==base,"writable alias retains the canonical identity");
     if(packaged) {
         uint16_t got[4]={0};NVNcopyRegion region={0,0,0,2,1,volume?2:1};mtl_read_texels(&t,0,0,&region,(uint8_t *)got,4,4);
@@ -254,6 +256,69 @@ static void reinterpret_image_case(int tid, int implicit, int packaged) {
     // A representation reached without a registered format view must prepare without an index-set loop.
     mtl_reg_tex(tid,NULL,NULL);g_p16_ids=nil;mtl_sub_begin();packed16_prepare(NULL,0);finish_views();
     mtl_tex_release(&t);CHECK(!atomic_load(&g_p16_count),"texture finalization releases its representation");free(t.mem);S.img[5][0]=0;
+}
+// A texture-to-buffer destination can alias a linear texture. Its native-order sampled representation must see the GPU write without a CPU dirty-page fault.
+static void reinterpret_buffer_write_case(int tid) {
+    tex_t t={.magic=MAGIC('T','E','X',0),.serial=99000+(unsigned)tid};
+    t.d=(nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA4,.width=2,.height=1,.depth=1,.levels=1,.samples=1,.flags=NVN_TEXTURE_FLAGS_LINEAR,.stride=256};
+    id<MTLBuffer> buffer=[g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared];
+    memset(buffer.contents,0xa5,256);uint16_t seed[2]={0x8421,0x8421};memcpy(buffer.contents,seed,4);
+    mtl_pool_add(buffer.contents,256);void *mapped=NULL;uint64_t offset=0;
+    CHECK(mtl_addr((uint64_t)buffer.contents,256,&mapped,&offset),"linear texture uses the same Metal pool buffer as guest copies");
+    MTLTextureDescriptor *d=tex_desc(&t,1);d.storageMode=MTLStorageModeShared;
+    id<MTLTexture> base=[(__bridge id<MTLBuffer>)mapped newTextureWithDescriptor:d offset:offset bytesPerRow:256];res_add(base);mtl_tex_init(&t);serial_put(t.serial,base);
+    // serial_put retains base in a C hash; mtl_tex_release(&t) below removes that entry and retires the resource after its GPU fence.
+    // NOLINTNEXTLINE(clang-analyzer-osx.cocoa.RetainCount)
+    view_t v={.set_format=1,.format=NVN_FORMAT_RGBA4};mtl_reg_tex(tid,&t,&v);
+    mtl_sub_begin();os_unfair_lock_lock(&g_rmu);id<MTLTexture> view=tex_by_id(tid);os_unfair_lock_unlock(&g_rmu);finish_views();
+    CHECK(view && !view.buffer,"linear format view has a native-order representation");
+    tex_t source={.magic=MAGIC('T','E','X',0),.serial=109000+(unsigned)tid};source.d=t.d;source.d.format=NVN_FORMAT_R16UI;source.d.flags=0;source.d.stride=0;
+    d=tex_desc(&source,1);d.storageMode=MTLStorageModeShared;id<MTLTexture> src=[g_dev newTextureWithDescriptor:d];res_add(src);
+    uint16_t changed[2]={0x0f00,0x1357};[src replaceRegion:MTLRegionMake2D(0,0,2,1) mipmapLevel:0 withBytes:changed bytesPerRow:4];mtl_tex_init(&source);serial_put(source.serial,src);
+    // serial_put's C-hash retain of src is balanced by mtl_tex_release(&source) below; the analyzer cannot follow the hash's ownership.
+    // NOLINTNEXTLINE(clang-analyzer-osx.cocoa.RetainCount)
+    uint64_t dirty=nvn_dirty_now();
+    p_copy_b2t copy={.src=(uint64_t)buffer.contents,.tex=&source,.r={0,0,0,2,1,1}};
+    mtl_sub_begin();copy_t2b(&copy);packed16_prepare(NULL,0);finish_views();
+    CHECK(nvn_dirty_now()==dirty,"texture-to-buffer alias write needs no CPU dirty-page event");
+    CHECK(!memcmp(buffer.contents,changed,4),"texture-to-buffer copy reaches the aliased guest bytes");
+    read_check(tid,view,(float[8]){0,0,1,0,7/15.f,5/15.f,3/15.f,1/15.f},.001f);
+    int padding=1;for(unsigned i=4;i<256;i++) padding&=((uint8_t *)buffer.contents)[i]==0xa5;
+    CHECK(padding,"refresh after an aliased buffer write preserves linear row padding");
+    mtl_reg_tex(tid,NULL,NULL);mtl_tex_release(&t);mtl_tex_release(&source);mtl_pool_del(buffer.contents);
+}
+// Disjoint planes of one mip can be attached with native and raw formats together. A shadow's writeback must preserve the native attachment and every untouched mip/plane.
+// A single raw-format attachment clearing two planes also exercises the standalone layered-clear pass followed by the ordinary pass.
+static void reinterpret_render_layers_case(int tid, int volume, int mrt) {
+    tex_t t={.magic=MAGIC('T','E','X',0),.serial=99000+(unsigned)tid};
+    t.d=(nvn_texdesc){.target=volume?NVN_TEXTURE_TARGET_3D:NVN_TEXTURE_TARGET_2D_ARRAY,.format=NVN_FORMAT_RGBA4,.width=4,.height=2,.depth=volume?6:3,.levels=2,.samples=1};
+    MTLTextureDescriptor *d=tex_desc(&t,0);d.storageMode=MTLStorageModeShared;d.usage|=MTLTextureUsagePixelFormatView;
+    id<MTLTexture> base=[g_dev newTextureWithDescriptor:d];res_add(base);uint16_t initial[48];for(unsigned i=0;i<48;i++) initial[i]=0x1248;
+    for(unsigned lv=0;lv<2;lv++) {
+        unsigned w=4>>lv,h=2>>lv,n=volume?t.d.depth>>lv:t.d.depth;
+        if(volume) [base replaceRegion:MTLRegionMake3D(0,0,0,w,h,n) mipmapLevel:lv slice:0 withBytes:initial bytesPerRow:w*2 bytesPerImage:w*h*2];
+        else for(unsigned sl=0;sl<n;sl++) [base replaceRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:lv slice:sl withBytes:initial bytesPerRow:w*2 bytesPerImage:w*h*2];
+    }
+    serial_put(t.serial,base);mtl_sub_begin();memset(&R,0,sizeof R);R.has_rt=1;R.rt.n=mrt?2:1;
+    for(int i=0;i<R.rt.n;i++) {
+        R.rt.color[i]=&t;R.rt.has_cview[i]=1;
+        R.rt.cview[i]=(view_t){.set_format=!mrt||i==1,.format=NVN_FORMAT_R16,.set_levels=1,.base_level=1,.nlevels=1,.set_layers=1,.min_layer=mrt?(unsigned)i:1,.nlayers=mrt?1:2};
+        R.clear_c[i]=1;R.cc[i]=mrt&&i==0?MTLClearColorMake(0,1,0,0):MTLClearColorMake(0x1357/65535.,0,0,1);
+    }
+    rp_flush();finish_views();memset(&R,0,sizeof R);
+    for(unsigned lv=0;lv<2;lv++) {
+        unsigned w=4>>lv,h=2>>lv,n=volume?t.d.depth>>lv:t.d.depth;
+        for(unsigned sl=0;sl<n;sl++) {
+            uint16_t got[8]={0};
+            if(volume) [base getBytes:got bytesPerRow:w*2 bytesPerImage:w*h*2 fromRegion:MTLRegionMake3D(0,0,sl,w,h,1) mipmapLevel:lv slice:0];
+            else [base getBytes:got bytesPerRow:w*2 bytesPerImage:w*h*2 fromRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:lv slice:sl];
+            uint16_t expected=lv==1?(mrt?(sl==0?0x0f00:sl==1?0x7531:0x1248):(sl>=1?0x7531:0x1248)):0x1248;
+            int equal=1;for(unsigned i=0;i<w*h;i++) equal&=got[i]==expected;
+            if(!equal) fprintf(stderr,"case %d mip %u plane %u: got %04x expected %04x\n",tid,lv,sl,got[0],expected);
+            CHECK(equal,mrt?"native/shadow MRT writes preserve independent mip planes":"two-plane raw-format clear preserves its range and other mips");
+        }
+    }
+    mtl_tex_release(&t);
 }
 int main(void) { @autoreleasepool {
     mtl_init();
@@ -297,6 +362,9 @@ int main(void) { @autoreleasepool {
     init_fill_case(431, NVN_FORMAT_RGBA4, NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS);
     reinterpret_case(440,0); reinterpret_case(441,1);
     reinterpret_range_case(442); reinterpret_image_case(443,0,0); reinterpret_image_case(444,1,0); reinterpret_image_case(445,0,1); reinterpret_image_case(446,0,2);
+    reinterpret_buffer_write_case(447);
+    reinterpret_render_layers_case(448,0,1);reinterpret_render_layers_case(449,1,1);
+    reinterpret_render_layers_case(450,0,0);reinterpret_render_layers_case(451,1,0);
     printf("texture view swizzle: %d checks, %d failed\n", checks, fails);
     return fails != 0;
 } }

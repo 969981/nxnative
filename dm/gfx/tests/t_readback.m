@@ -484,6 +484,59 @@ static void packed_format_view_copies(void) {
     }
 }
 
+// An integer backing sampled through an RGBA4 view still needs its guest bits when the shader binds it as a uint image. A converted sampled shadow is not the writable image.
+static void inverse_rgba4_image(int ranged) {
+    int tid = 650 + ranged;
+    tex_t t = {.magic=MAGIC('T','E','X',0), .serial=99650+(unsigned)ranged};
+    t.d = (nvn_texdesc){.target=ranged ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D, .format=NVN_FORMAT_R16UI,
+        .width=ranged ? 4 : 2, .height=ranged ? 2 : 1, .depth=ranged ? 2 : 1, .levels=ranged ? 2 : 1, .samples=1, .flags=NVN_TEXTURE_FLAGS_IMAGE};
+    MTLTextureDescriptor *d = tex_desc(&t, 0); d.storageMode = MTLStorageModeShared;
+    id<MTLTexture> base = [g_dev newTextureWithDescriptor:d];
+    EXPECT("inverse RGBA4 image backing created", 1, base != nil); if (!base) return;
+    res_add(base);
+    const uint16_t seed[8] = {0x8421,0x0f00,0x8421,0x0f00,0x8421,0x0f00,0x8421,0x0f00};
+    for (unsigned lv = 0; lv < t.d.levels; lv++) for (unsigned sl = 0; sl < t.d.depth; sl++) {
+        NSUInteger w = t.d.width >> lv, h = t.d.height >> lv;
+        [base replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:lv slice:sl withBytes:seed bytesPerRow:w * 2 bytesPerImage:w * h * 2];
+    }
+    serial_put(t.serial, base);
+    // The C serial cache retains base; mtl_tex_release below deletes its entry and defers GPU retirement. The analyzer reports that untracked ownership here.
+    // NOLINTNEXTLINE(clang-analyzer-osx.cocoa.RetainCount)
+    view_t v = {.set_format=1, .format=NVN_FORMAT_RGBA4};
+    if (ranged) { v.set_levels=v.set_layers=v.set_target=1; v.base_level=v.min_layer=1; v.nlevels=v.nlayers=1; v.target=NVN_TEXTURE_TARGET_2D; }
+    mtl_reg_image(tid, &t, &v);
+    NSError *error = nil;
+    id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void put(texture2d<uint, access::write> t [[texture(0)]]) { t.write(uint4(0x1357), uint2(0, 0)); }\n" options:nil error:&error];
+    id<MTLFunction> fn = [lib newFunctionWithName:@"put"];
+    id<MTLComputePipelineState> ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&error] : nil;
+    EXPECT("inverse RGBA4 image writer compiled", 1, ps != nil);
+    if (ps) {
+        nvn_rbind binding = {.kind=NVN_RB_IMG, .dpf=NVN_DPF_UINT, .dtt=MTLTextureType2D, .rw=1};
+        NvShader *cs = [NvShader new]; cs->stage=5; cs->rf.nb=1; cs->rf.b[0]=binding;
+        NvProg *pr = [NvProg new]; pr->sh[5]=cs;
+        state_reset(); memset(&R, 0, sizeof R); S.img[5][0]=(uint64_t)tid; mtl_sub_begin();
+        image_prepare(pr, 1u << 5); id<MTL4ComputeCommandEncoder> ce = dispatch_enc(); enc_c_pso(ce, ps);
+        os_unfair_lock_lock(&g_rmu); uint64_t rid; int real;
+        id<MTLTexture> image = img_binding(tid, &binding, &rid, &real); os_unfair_lock_unlock(&g_rmu);
+        EXPECT("inverse RGBA4 view binds a real writable integer image", 1, real && image.pixelFormat == MTLPixelFormatR16Uint && (image.usage & MTLTextureUsageShaderWrite));
+        EXPECT("inverse RGBA4 image keeps its selected dimensions", 1, image.width == 2 && image.height == 1);
+        [g_ct setTexture:image.gpuResourceID atIndex:0]; enc_c_dispatch(ce, MTLSizeMake(1,1,1), MTLSizeMake(1,1,1)); packed16_views_flush();
+        EXPECT("inverse RGBA4 image store commit", 1, mtl_wait(mtl_sub_commit(), 5000000000ull));
+        EXPECT("inverse RGBA4 image store GPU success", 0, mtl_last_commit_error());
+        id<MTLTexture> actual = tex_mtl(&t); int bad = 0;
+        for (unsigned lv = 0; lv < t.d.levels; lv++) for (unsigned sl = 0; sl < t.d.depth; sl++) {
+            NSUInteger w = t.d.width >> lv, h = t.d.height >> lv; uint16_t got[8] = {0};
+            [actual getBytes:got bytesPerRow:w * 2 bytesPerImage:w * h * 2 fromRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:lv slice:sl];
+            for (NSUInteger i = 0; i < w * h; i++) bad += got[i] != (lv == (unsigned)ranged && sl == (unsigned)ranged && !i ? 0x1357 : seed[i]);
+        }
+        EXPECT("inverse RGBA4 image store preserves literal guest bits and other subresources", 0, bad);
+        uint16_t read[2] = {0}; NVNcopyRegion region = {0,0,0,2,1,1};
+        mtl_read_texels(&t, (unsigned)ranged, (unsigned)ranged, &region, (uint8_t *)read, 4, 4);
+        EXPECT("inverse RGBA4 image store ReadTexels sees literal guest words", 1, read[0] == 0x1357 && read[1] == 0x0f00);
+    }
+    S.img[5][0]=0; mtl_reg_tex(tid, NULL, NULL); mtl_tex_release(&t);
+}
+
 int main(void) { @autoreleasepool {
     alarm(60); if (setvbuf(stdout, NULL, _IONBF, 0)) abort();   // GPU, callback and pthread failures must not leave the check target hanging.
     mtl_init();
@@ -590,6 +643,7 @@ int main(void) { @autoreleasepool {
     rgba4_format_storage();
     rgba4_rgb565_storage();
     packed_format_view_copies();
+    inverse_rgba4_image(0); inverse_rgba4_image(1);
     mirror_completion();
     printf("READBACK cases=%d failed=%d\n", cases, failed); return failed != 0;
 } }
