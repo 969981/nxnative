@@ -18,6 +18,7 @@ _bad = tool_lock.check_tools()
 if _bad: sys.exit('\n'.join('[RED] translation chain tools do not match the lock file: ' + b for b in _bad) + '\n(if the tools changed, run tool_lock.py --update-lock and commit the lock file; if the translator just was not rebuilt, rebuild it)')
 CHAIN = dmsh_chain.version(); out = os.path.join(out, 'b-' + CHAIN)
 GAME = dmsh_chain.load_game()   # the current game profile (DM_GAME): the tables come from here
+ZERO_PERIOD_GUARDS = {key: spec for key, spec in (rule.split(':', 1) for rule in GAME.words('shader_zero_period_guard', ''))}
 if f'"{CHAIN}"' not in open(dmsh_chain.HEADER).read(): sys.exit(f'[RED] {dmsh_chain.HEADER} does not hold the current translation chain version {CHAIN}: run dmsh_chain.py --header first and commit it (otherwise the host cannot find these libraries)')
 INPUTS = dmsh_chain.inputs(GAME)   # the digest of the profile's inputs, which a full build stamps on its libraries (b-<V>/inputs.tsv)
 XLATE = os.environ.get('XLATE', os.path.join(dmsh_chain.XLATE_DIR, 'dmsh_xlate'))
@@ -48,6 +49,27 @@ XC = ['--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-textur
 # and its saturation gives 0, as Metal's precise:: functions (IEEE fmin / fmax) do on every GPU. The M4 Pro's fast ones happen to agree, an A20 Pro's do not: Super Mario Galaxy 2's
 # GX lighting takes max(0, NaN) from light directions left at zero, and the half of Mario its fill light faces came out white on the iPhone (GitHub issue 72; vk_shaders.py PRECISE)
 def precise(msl): return re.sub(r'\bfast::(min|max|clamp)\(', r'precise::\1(', msl)
+
+def zero_period_guard(msl, spec):
+    """Opt-in compatibility guard for a material's brightness pulse: bank:period-row.component:strength-row.component.
+    A zero period disables the pulse; nonzero periods keep the original expression. Exact shader keys live in the profile.
+    The original console's nonfinite handling is unverified; this deliberately defines the zero-period case locally."""
+    match = re.fullmatch(r'(\d+):(\d+\.[xyzw]):(\d+\.[xyzw])', spec)
+    if not match: raise ValueError(f'invalid shader_zero_period_guard: {spec}')
+    bank, period, strength = match.groups()
+    def field(value):
+        row, component = value.split('.')
+        return f'(*spvDescriptorSet0.vp_c{bank})._m0[{row}].{component}'
+    period, strength = field(period), field(strength)
+    reciprocal = list(re.finditer(r'float (\w+) = 1\.0 / ' + re.escape(period) + r';', msl))
+    pulse = list(re.finditer(r'float (\w+) = (\w+) \* ' + re.escape(strength) + r';', msl))
+    if len(reciprocal) != 1 or len(pulse) != 1:
+        raise ValueError('zero-period pulse guard requires exactly one reciprocal and one strength multiplication')
+    r, p = reciprocal[0], pulse[0]
+    msl = msl.replace(r[0], f'// Compatibility guard: a zero period leaves brightness steady.\n'
+                      f'    float dm_pulse_period = {period};\n'
+                      f'    float {r[1]} = dm_pulse_period == 0.0 ? 0.0 : 1.0 / dm_pulse_period;', 1)
+    return msl.replace(p[0], f'float {p[1]} = dm_pulse_period == 0.0 ? 0.0 : {p[2]} * {strength};', 1)
 
 # Ampere HMMA.16816 with an f16 accumulator (agl's upscaler networks) reaches the MSL as a call of dmsh_hmma16816_f16(lane, block, A0..A3, B0, B1, C0, C1, out D1) → D0, with
 # the subgroup's 256-word block of the scratch shared memory as the last argument (InstEmitAmpereTensor.AHmma, TensorPass, HelperFunctionManager.GenerateHmma16816F16). The
@@ -1210,6 +1232,9 @@ def finish(key, w, j, c1):
     try: src = dmsh_atomic.check_msl(src)
     except ValueError as e: return 'image atomic MSL failed', str(e), None
     src = precise(src)   # min / max / clamp with Maxwell's NaN results (see precise)
+    if key in ZERO_PERIOD_GUARDS:
+        try: src = zero_period_guard(src, ZERO_PERIOD_GUARDS[key])
+        except ValueError as e: return 'zero-period pulse guard failed', str(e), None
     try: src = hmma_msl(src)   # Ampere HMMA through simdgroup_matrix (see hmma_msl)
     except ValueError as e: return 'HMMA rewrite failed', str(e)[:160], None
     try: src = pool_arrays(src)   # handles traced to no slot read the pools the replay keeps (see pool_arrays)

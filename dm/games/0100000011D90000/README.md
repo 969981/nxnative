@@ -28,6 +28,18 @@ No game-specific code cuts. `DM_FPS_TARGET=30 DM_PRESENT_INTERVAL=game` restores
 - **Resolved: missing skinning compute shader, black 3D behind the dialogue.** Stripped `ComputeShader` objects in `Data/Resources/unity default resources` have type hash `1a95529ac2eb1a97cd9d2a4356bd722f`. `unityfs.py` now has Unity 2019.4.27f1's release layout, checked against [AssetRipper's dump](https://github.com/AssetRipper/TypeTreeDumps/blob/main/StructsDump/release/2019.4.27f1.dump): 116 nodes with matching alignment flags, both objects read to their exact ends. Unlike newer Unity versions, each named kernel holds its code directly. `Internal-Skinning` contributes 16 kernels and `Internal-BlendShape` three; the missing runtime key `2c1e06378edbd813` matches `Internal-Skinning#main.0` exactly. With these kernels the professor, character selection, household and outdoor character models render correctly, with no missing shader in the tested route.
 - The rewriter handles six offset jump tables and one indirect call through `x18` in `main`, with no additional rewriter mechanism.
 
+## Zero TV pulse period
+
+- **Compatibility guard; original-console nonfinite behavior remains open.** On an Apple M2, macOS 26.6.1, Xcode 27.2 and Metal compiler 32023.922, the upstairs TV saturates the HDR scene color and bloom spreads it across the room. Material probes identify `Delphis/Map/LineUVScroll`, vertex key `b8b1925cc16f8247` and pixel key `bf70b833d622277c`. Texture samples and normalized vertex colors are ordinary.
+- The game's recorded 176-byte vertex uniform update supplies period `c4[9].w = 0` and strength `c4[10].x = 0.1`. The shader's brightness pulse computes `cos(2π * fract(time / period)) * strength`. A GPU bit probe observes the phase and cosine varying as `0x7f7fffff`; the RG11B10F scene saturates to 65024 / 65024 / 64512 at the TV before bloom. Disabling deferred uniform updates and using `precise::cos` alone do not fix it. These measurements identify the invalid calculation; they do not establish the original Switch's handling of its nonfinite result.
+- `shader_zero_period_guard` in `game.tsv` opts in this exact vertex key. A zero period skips the reciprocal and uses zero pulse amplitude, leaving steady brightness. Nonzero periods retain the original calculation. The builder applies the guard before depth, capture and pulling variants, and fails if the expected source patterns do not each match once. This is an explicit compatibility behavior, rather than a claim of exact hardware emulation.
+- On the integrated `e5620b1a` build plus the guard, upstairs/downstairs rendering, Twinleaf Town movement, manual saving and a separate-process reload passed. All 14,441 shaders built; the static regression comparison changed only this vertex shader and its variants, with no new build or interface failures. A run reaching frame 121,200 had no red lines or crash, and zero reported audio underruns across 404 reporting windows; median frame-time medians were 16.65 ms. Later areas, battles and iOS remain untested.
+- Before and after, from separate launches in the same upstairs room (the camera positions differ):
+
+  | Before | After |
+  |---|---|
+  | ![TV bloom obscures the upstairs room](../../../docs/images/brilliant-diamond-tv-before.png) | ![TV picture and upstairs room with the zero-period guard](../../../docs/images/brilliant-diamond-tv-after.png) |
+
 ## Frame rate
 
 - **Resolved: gameplay returns to 30 fps after 60 fps menus.** The game's IL2CPP initialization loads 30 at `main+0x2bc13f8` and calls the `Application.set_targetFrameRate` wrapper at `+0x26a0240`. The engine's icall registration at `+0xe34e60` resolves to `+0xdc8e70` → `+0x5fa640`, which stores the integer at `main+0x4afc868`; its getter at `+0x5fa630` reads the same field. The host's integer-FPS limiter row is gated on main build `94ceae32…` and keeps it at `fps_target`, even when the game resets it.
@@ -51,6 +63,8 @@ Build with `scripts/build_ipa_from_nsp.py <NSP folder> -k <prod.keys> --platform
 - Host tests pass, including synthetic VP8 / VP9 NV12 and RGBA decoding, AudioOut stop / queue stress and integer / float / millisecond / vsync frame-limit regressions. The graphics Python suite passes (41 tests, two skipped); Metal depth / stencil clear, stencil-view, read-only depth and upload-budget regressions pass. Rewriter patch, chain and documentation checks pass.
 
 ## Found on this game
+
+- [Opt-in zero-period brightness pulses](../../../docs/reference/shaders.md#opt-in-zero-period-brightness-pulses), with the console behavior still open as described above.
 
 - SDK 11.4.3's instance of [the SDK's address-region node area](../../../docs/reference/memory.md#the-sdks-address-region-node-area), with the cut keyed by the shared SDK build ID.
 - Legacy kernels held directly in [Unity ComputeShader objects](../../../docs/reference/shaders.md#unity-computeshader-objects).
