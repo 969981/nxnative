@@ -62,7 +62,7 @@ trackpads, motion and rumble, before registering native input. Matching native
 profile names is unnecessary: identical controllers and separate Puck
 interfaces keep their raw features. Empty Puck interfaces and cached native
 profiles never claim a player slot. Other controllers use Apple's GameController
-or the generic HID fallback described below.
+or the generic HID fallback described above.
 
 The Triton adapter supports:
 
@@ -126,17 +126,9 @@ For pairing, firmware updates and Puck setup, follow
 The original 2015 Steam Controller is a different protocol and is not handled
 by this adapter.
 
-Validation uses real GameController snapshots, synthetic USB/Bluetooth/Puck
-reports, sensor units/timestamp wraps, guest six-axis history, rumble output and
-stop/refresh checks, trackpad touches, identical native profile names, stale
-native events, exclusive HID ownership/failure/removal, player-slot checks and
-saved-map round trips (including older button-only maps). Those
-tests do not establish physical-device compatibility. A [PR #221 hardware
-report](https://github.com/seedds/nxnative/pull/221#issuecomment-6428699708) confirms
-USB-C buttons, sticks and rumble in TotK 1.4.3, and gyro aiming with the proposed
-10% deadzone. This revision still needs hardware retesting; trackpads, rear
-buttons, mapping persistence and other connection modes were not covered by
-that report.
+Physical-device validation is incomplete. Trackpads, rear buttons, mapping
+persistence, Bluetooth and Puck operation still need hardware testing on this
+revision. The gyro scale has not been calibrated against a known rotation.
 
 Native GameController motion and passive Switch Pro Controller motion use the
 upstream motion system and follow the same player slots as mapped buttons.
@@ -176,11 +168,10 @@ them. See [controller-specific choices](frontends.md#controller-specific-choices
 for the extra-input data in that same domain. Transport discovery, report
 decoding, rumble and six-axis sampling remain independent of these choices.
 
-The hardware report also leaves gyro scale calibration unconfirmed. It notes
-that TotK resets its aim reference at an exactly identity orientation, including
-a recenter; moving the controller resumed aiming in that test. This branch
-keeps a truthful identity pose instead of fabricating a rotation. The tested
-fix for aiming suppressed by resting sticks is the radial deadzone.
+Recenter keeps a truthful identity orientation. A game that treats an exactly
+identity orientation as an unset aim reference may need controller movement
+after recentering. The radial deadzone prevents resting stick drift from
+overriding gyro aiming.
 
 ## Input Monitoring and rebuilt apps
 
@@ -243,6 +234,5 @@ host). `Steam Controller HID access unavailable` and
 holding the device; neither message alone proves a permission problem. Also
 check that `DM_STEAM_HID=0` is not disabling the direct adapter. If Bluetooth
 input fails in Steam and other games too, troubleshoot the Mac's connection
-first; reconnecting or restarting macOS resolved that separate issue during
-testing. For repeated development builds, the packer's existing `--mac-sign`
+first. For repeated development builds, the packer's existing `--mac-sign`
 option can use a stable signing identity; see [Mac app signing](development.md#a-mac-app).
