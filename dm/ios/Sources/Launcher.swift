@@ -14,6 +14,7 @@ private func info(_ key: String) -> Any? { Bundle.main.object(forInfoDictionaryK
 /// Cloud saves too). The host brings the save in from there when the game starts and
 /// sends it there after each save (dm/host/save_sync.h); the folder is a bookmark (CloudSaves.m).
 private struct CloudSavesSection: View {
+    let personalSaveIsLocal: Bool
     @State private var folder: String = ""
     @State private var note: String = ""
     @State private var picking = false
@@ -45,9 +46,12 @@ private struct CloudSavesSection: View {
                 }
             }
         } footer: {
-            Text(note.isEmpty
-                 ? "Choose a folder in iCloud Drive, and the same one in the Mac app's Cloud saves. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in save-backups."
-                 : note)
+            if !note.isEmpty { Text(note) }
+            if personalSaveIsLocal {
+                Text("This player’s personal save stays on this device. The cloud folder syncs the original player’s save and shared game data.")
+            } else if note.isEmpty {
+                Text("Choose a folder in iCloud Drive, and the same one in the Mac app's Cloud saves. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in save-backups.")
+            }
         }
         .onAppear(perform: refresh)
     }
@@ -115,6 +119,7 @@ private struct LauncherView: View {
                 .padding(16)
                 .frame(width: geometry.size.width / 3, height: geometry.size.height)
                 List {
+                    PlayerSection(m: m)
                     ForEach(m.sections, id: \.self) { section in
                         let rows = m.rows(in: section)
                         if !rows.isEmpty {
@@ -129,7 +134,7 @@ private struct LauncherView: View {
                     } footer: {
                         Text("Brings back all settings this game was tested with.")
                     }
-                    CloudSavesSection()
+                    CloudSavesSection(personalSaveIsLocal: m.personalSaveIsLocal)
                     Section {
                         HStack {
                             Text("Memory available")
@@ -168,22 +173,21 @@ private struct LauncherView: View {
 // Shows the launcher over the root view controller and calls done once the settings are in the environment; false (done is not called) when there is no launcher
 @_cdecl("dm_show_launcher")
 public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @convention(c) () -> Void) -> Bool {
-    guard let url = Bundle.main.resourceURL?.appendingPathComponent("dm/launcher.json"), let data = try? Data(contentsOf: url) else { return false }
-    guard let file = try? JSONDecoder().decode(SettingsFile.self, from: data), !file.settings.isEmpty else { fputs("[RED] launcher: dm/launcher.json cannot be read; starting the game\n", stderr); return false }
-    if ProcessInfo.processInfo.environment["DM_LAUNCHER"] == "0" { fputs("launcher: off (DM_LAUNCHER=0)\n", stderr); LauncherModel(file.settings).applySaved(); return false }
+    let settings = SettingsFile.bundledSettings()
+    guard !settings.isEmpty || dm_users_count() > 1 else { return false }
+    let model = LauncherModel(settings)
+    if ProcessInfo.processInfo.environment["DM_LAUNCHER"] == "0" { fputs("launcher: off (DM_LAUNCHER=0)\n", stderr); model.applySaved(); return false }
     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()
-    let model = LauncherModel(file.settings)
     var host: UIViewController?
     let view = LauncherView(m: model) {
-        guard let h = host else { return }
+        guard let h = host, model.apply() else { return }
         host = nil
-        model.apply()
         h.dismiss(animated: false) { done() }
     }
     let h = UIHostingController(rootView: view)
     h.modalPresentationStyle = .fullScreen
     host = h
     parent.present(h, animated: false)
-    fputs("launcher: \(file.settings.count) settings shown\n", stderr)
+    fputs("launcher: \(settings.count) settings shown\n", stderr)
     return true
 }

@@ -118,6 +118,7 @@ class PackReuse(unittest.TestCase):
             'pso/prebuilt.tsv': b'prebuilt', 'pso/rest_pairs.tsv': b'rest', 'pso/archive.tsv': b'index',
             'env.txt': b'DM_TEST=1', 'split.tsv': b'split', 'icon.jpg': b'jpeg', 'source/launcher.c': b'launcher',
             'host/romfs_image.h': b'validator', 'host/save_sync.c': b'sync', 'host/save_sync.h': b'sync api', 'tools/romfs.py': b'reader',
+            'host/local_users.m': b'roster', 'host/local_users.h': b'roster api',
             'source/Launcher.swift': b'window', 'ios/Sources/LauncherSettings.swift': b'model', 'ios/Sources/LauncherRow.swift': b'rows',
         }
         for n in pack_app.TABLES: files['profile/' + n] = n.encode()
@@ -198,7 +199,7 @@ class PackReuse(unittest.TestCase):
                  'patched/main.obs.tsv', 'patched/nro.tsv', 'msl/k.metallib', 'msl/k.json', 'msl/inputs.tsv', 'font/nintendo_ext.ttf',
                  'pso/gpu.mtl4a', 'pso/prebuilt.tsv', 'pso/rest_pairs.tsv', 'pso/archive.tsv', 'env.txt', 'icon.jpg', 'source/launcher.c',
                  'source/Launcher.swift', 'ios/Sources/LauncherSettings.swift', 'ios/Sources/LauncherRow.swift',   # the settings window's sources
-                 'host/save_sync.c', 'host/save_sync.h']   # the cloud-save code the launcher links (its send after the host exits)
+                 'host/save_sync.c', 'host/save_sync.h', 'host/local_users.m', 'host/local_users.h']
         names += ['profile/' + n for n in pack_app.TABLES]
         for name in names:
             with self.subTest(name=name):
@@ -541,6 +542,65 @@ class App(unittest.TestCase):
         p = self.launch(); p.communicate(timeout=30)
         self.assertIn('standin host output', (logs / f'{TID}.prev.log').read_text())
         self.assertEqual(self.host_run()['DM_LANG'], 'fr')   # Info.plist DMLanguage
+
+    def test_local_users_without_window(self):
+        sup = self.tmp / f'home/Library/Application Support/nxnative/{TID}'
+        sup.mkdir(parents=True, exist_ok=True)
+        shared = sup.parent / 'users.json'
+        first, second = '53574e415449564578626c0000000001', '00000000000000000000000000000002'
+        shared.write_text(json.dumps({'version': 1, 'users': [{'id': first, 'nickname': 'Alice'}, {'id': second, 'nickname': 'Bob'}]}))
+        self.addCleanup(shared.unlink, missing_ok=True)
+        p = self.launch(DM_USER_ID=second); p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 7)
+        run = self.host_run()
+        self.assertEqual((run.get('DM_USERS_FILE'), run.get('DM_USER_ID')), (str(shared), second))
+
+        # An env.txt may name a different roster relative to this game's Application Support folder.
+        relative = sup / 'family.json'; relative.write_bytes(shared.read_bytes())
+        self.addCleanup(relative.unlink)
+        env_file = sup / 'env.txt'
+        old = env_file.read_bytes() if env_file.exists() else None
+        self.addCleanup(lambda: env_file.write_bytes(old) if old is not None else env_file.unlink(missing_ok=True))
+        env_file.write_text('DM_USERS_FILE=family.json\n')
+        p = self.launch(); p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 7)
+        self.assertEqual((self.host_run()['DM_USERS_FILE'], self.host_run()['DM_USER_ID']), (str(relative), first))
+        relative.write_text('unreadable roster')
+        (self.tmp / 'home/host_run.txt').unlink()
+        p = self.launch(); p.communicate(timeout=30)
+        self.assertNotEqual(p.returncode, 7)
+        self.assertFalse((self.tmp / 'home/host_run.txt').exists())
+
+    def test_list_users_reads_launch_configuration_without_starting(self):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as t:
+            home = Path(t)
+            cmd = [self.app / 'Contents/MacOS/nxnative', '--list-users']
+            env = dict(HOME=t, PATH='/usr/bin:/bin')
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['selected'], '53574e415449564578626c0000000001')
+            self.assertEqual(list(home.iterdir()), [])   # no log, working directories or stand-in host output
+            support = home / f'Library/Application Support/nxnative/{TID}'
+            support.mkdir(parents=True)
+            bob = '00000000000000000000000000000002'
+            users = [{'id': '53574e415449564578626c0000000001', 'nickname': 'Alice'}, {'id': bob, 'nickname': 'Bob'}]
+            (support / 'env.txt').write_text('DM_USERS_FILE=family.json\n')
+            (support / 'family.json').write_text(json.dumps({'version': 1, 'users': users}))
+            result = subprocess.run([*cmd, '--no-launcher'], env=dict(env, DM_USER_ID=bob), capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {'version': 1, 'users': users, 'selected': bob})
+            self.assertFalse((home / 'Library/Logs').exists())
+            result = subprocess.run(cmd, env=dict(env, DM_USER_ID='unknown'), capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, '')
+
+    def test_exit_without_a_synced_mount_keeps_cloud_untouched(self):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as t:
+            save, cloud = Path(t) / 'save', Path(t) / 'cloud'
+            save.mkdir(); (save / 'progress').write_bytes(b'older local progress')
+            p = self.launch(DM_SAVE=str(save), DM_SAVE_SYNC=str(cloud)); p.communicate(timeout=30)
+            self.assertEqual(p.returncode, 7)   # the stand-in exits without mounting a save
+            self.assertFalse(cloud.exists())
 
     def test_sigterm(self):   # forwarded to the host, whose exit code comes back
         p = self.launch(wait=True)

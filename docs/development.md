@@ -14,6 +14,10 @@ The README covers packing and playing. This page is for working on nxnative itse
 | iOS app | One unsigned IPA for iPhone and iPad. The rewritten code is embedded in the executable; the shader libraries, the RomFS and the game icon are inside the app. A settings screen comes before the game (`Launcher.swift`, drawn from `dm/launcher.json`, which `dm/games/settings.py` writes from `dm/games/settings.tsv`); the host's loading starts at app launch meanwhile, and the frame rate and render scale go into the frame step state when the game starts (`loader.c` `dm_fps_state_apply`) |
 | Known gaps | Conditional render is always drawn; `MultiDraw*IndirectCount` waits on the CPU for the GPU-written count; geometry shaders do not translate. TBDR optimizations are off by default (they don't understand bindless textures yet). No amiibo. On the Mac, Mario's menu and dialogue text render blank (fine on the iPhone) |
 
+## Local accounts and save storage
+
+The Mac and iOS launchers and the host share the roster reader in `dm/host/local_users.m`. The picker runs before guest execution. The host freezes the chosen identity at game start, and `hle_account.c` uses the roster for guest enumeration, handles and nicknames. `hle_fs.c` routes account mounts by their requested UID while device mounts retain the title's existing shared directory. The [frontend contract](frontends.md#local-users) specifies roster discovery, the JSON query, storage paths and cloud coverage. For hosts without a roster, the original local UID, nickname override and save paths still apply.
+
 ## Cheats
 
 How a Switch with Atmosphère runs cheats, and where this host differs, is in [Cheats on a Switch](reference/cheats.md).

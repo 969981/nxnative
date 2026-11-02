@@ -5,6 +5,7 @@ A graphical app that packs games, keeps a library of them or starts them is a pr
 - [Building: the NSP script](#building-the-nsp-script)
 - [The settings list](#the-settings-list)
 - [Starting a game](#starting-a-game)
+- [Local users](#local-users)
 - [An app that hosts the engine](#an-app-that-hosts-the-engine)
 - [What a front end cannot see yet](#what-a-front-end-cannot-see-yet)
 
@@ -57,6 +58,36 @@ A Mac app shows its own settings window before the game, drawn from its `launche
 Settings a player chose in a front end and wants kept, also for a start from Finder or the Dock, go in the app's saved choices ([Saved choices](#saved-choices)), not in its environment.
 
 **An IPA** is installed by the player (sideloading); its own settings screen starts the game. Lines in the app's `Documents/env.txt` win over that screen ([Settings in a file](settings.md#settings-in-a-file)). The save and `log.txt` are in the app's Documents folder.
+
+## Local users
+
+A frontend can supply a roster, show the nicknames and pass the chosen ID to the built app. The game sees the same IDs through its account service. The built-in launcher also offers the choice before Play when the roster contains multiple users.
+
+`DM_USERS_FILE` names a UTF-8 JSON file. A built Mac app looks for `~/Library/Application Support/nxnative/users.json` by default, shared by its games. An iOS app looks in its own `Documents/users.json`. An explicit relative path in the launch environment or `env.txt` resolves against the Mac game's Application Support directory or the iOS app's Documents directory. A directly invoked `dmhost` takes its configuration from the environment and resolves relative paths against its working directory.
+
+```json
+{
+  "version": 1,
+  "users": [
+    {"id": "53574e415449564578626c0000000001", "nickname": "Alice"},
+    {"id": "d78867e01fd44334a238078801be53ea", "nickname": "Bob"}
+  ]
+}
+```
+
+The roster holds 1–8 users and fits in 16 KiB. Each ID is 32 hex digits (high 64-bit word first), nonzero, unique regardless of case. Generate an ID once, for example from a UUID with its hyphens removed, and retain it when renaming or reordering users. Nicknames are 1–32 UTF-8 bytes and exclude control characters. The legacy ID shown for Alice retains the original player's saves. Removing an entry leaves that user's files on disk. Editors should replace the file atomically. Changes apply at the next launch.
+
+For the built Mac app, run its launcher with `--list-users` to include the app's normal `env.txt` files and roster discovery. For a raw host, provide the roster path explicitly. Either query exits before loading game files.
+
+```sh
+"/path/to/Game.app/Contents/MacOS/nxnative" --list-users
+DM_USERS_FILE=/path/to/users.json dmhost --list-users
+DM_USERS_FILE=/path/to/users.json DM_USER_ID=d78867e01fd44334a238078801be53ea "/path/to/Game.app/Contents/MacOS/nxnative"
+```
+
+The query writes one JSON object to stdout containing `version`, `users` (as above, IDs in lowercase), and `selected` (the effective ID). A malformed roster, unsupported version, unreadable explicit path or unknown selected ID produces a diagnostic and nonzero exit. The engine refuses to start a guest with invalid configuration. The default selection is the first listed user. An explicit `DM_USER_ID` fixes the selection for that launch. A choice made inside the app applies to the current launch. An external frontend can remember a choice by ID and pass it on future starts. The guest user-selector applet returns the chosen ID. If the game excludes that user or requires a linked online account, the configured selection fails. Games can also enumerate and open other local users explicitly.
+
+For account saves the engine uses the UID the **game passes to the mount**, even if it differs from the launcher selection. The legacy account uses `DM_SAVE`. Every other account uses its sibling `<DM_SAVE>.user-<lowercase ID>`. Device data is shared across users of the title: a title that mounts both kinds keeps its device data in `<DM_SAVE>_device`; a device-save-only title keeps its existing `DM_SAVE` (for example, the Animal Crossing island). The existing cloud archive covers the legacy and shared device trees. Additional users' individual save directories are local and must be backed up separately. A frontend that transfers saves can identify them from the roster and these paths. Run one game process at a time against a title's save root, since its device save and transaction directories are shared.
 
 ## Saved choices
 

@@ -6,6 +6,24 @@ extension LauncherModel {
     func binding(_ s: Setting) -> Binding<String> { Binding(get: { self.values[s.env] ?? s.def }, set: { self.values[s.env] = $0 }) }
 }
 
+struct PlayerSection: View {
+    @ObservedObject var m: LauncherModel
+
+    var body: some View {
+        if m.userLabels.count > 1 {
+            Section {
+                Picker("Who's playing?", selection: $m.selectedUser) {
+                    ForEach(m.userLabels.indices, id: \.self) { index in
+                        Text(verbatim: m.userLabels[index]).tag(Int32(index))
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(m.userLocked)
+            }
+        }
+    }
+}
+
 struct SettingRow: View {
     let s: Setting
     @ObservedObject var m: LauncherModel

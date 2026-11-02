@@ -4,7 +4,11 @@ How to build and install a game: [README](../README.md#how-to-play).
 
 - **Settings:** a screen before the game starts sets frame rate, resolution, docked or handheld mode, language, rumble and more. Tap **Play**; your choices are remembered. What each one does: [Settings](settings.md).
 - **Saves and logs** are in the Files app, under the game's name: `save/` and `log.txt` (the previous run is `log.prev.txt`). When something goes wrong, send `log.txt`.
-- **Reinstalling:** some sideloading tools give a reinstalled app a new data folder. Copy `save/` and `pso_user.tsv` over from the old one to keep your progress.
+- **Reinstalling:** some sideloading tools give a reinstalled app a new data folder. With the game closed, copy the committed save folders from the old container: `save/`, `save_device/` if present, and each `save.user-<ID>/` when using local users. Also copy `users.json` (or the roster you configured) so the new install recognizes those IDs. Copy `pso_user.tsv` to keep the recorded pipeline list. Leave the temporary `.work` and `.new` directories behind.
+
+## Local players
+
+To share a game, place a [local user roster](frontends.md#local-users) in `~/Library/Application Support/nxnative/users.json` on Mac, or in the game app’s `Documents/users.json` on iPhone or iPad. You can add the file after building the app. With two or more users, choose **Who’s playing?** in the game’s launcher before pressing **Play**. Keep the original player's ID from the example to continue an existing save, and give each additional player a different ID. Each player has their own account save. Games that keep common device data, such as an Animal Crossing island, share that data. Additional players’ personal saves stay on this device.
 
 ## Touch controls
 

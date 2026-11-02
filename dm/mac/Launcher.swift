@@ -29,8 +29,9 @@ struct LauncherView: View {
             }
             .padding([.horizontal, .top], 20)
             Form {
+                PlayerSection(m: m)
                 settingSections(basic: true)
-                CloudSavesSection()
+                CloudSavesSection(personalSaveIsLocal: m.personalSaveIsLocal)
                 Section {
                     DisclosureGroup("Advanced settings", isExpanded: $advanced) {}
                 }
@@ -76,6 +77,7 @@ struct LauncherView: View {
 /// Cloud saves: a folder the save is synced through (dm/host/save_sync.h), the one the iPhone app picks in its launcher's Cloud saves section. It is kept in this app's
 /// preferences as cloudSaves.folder, which launcher.c puts into DM_SAVE_SYNC before the host starts; a DM_SAVE_SYNC an env file or the launch environment set wins, and is shown here.
 struct CloudSavesSection: View {
+    let personalSaveIsLocal: Bool
     @AppStorage("cloudSaves.folder") private var folder = ""
     private let fixed: String? = {
         let env = ProcessInfo.processInfo.environment
@@ -96,7 +98,11 @@ struct CloudSavesSection: View {
                 }
             }
         } footer: {
-            Text("Choose the iCloud Drive folder the iPhone app uses for this game. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in the save's -backups folder.")
+            if personalSaveIsLocal {
+                Text("This player’s personal save stays on this Mac. The cloud folder syncs the original player’s save and shared game data.")
+            } else {
+                Text("Choose the iCloud Drive folder the iPhone app uses for this game. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in the save's -backups folder.")
+            }
         }
     }
 
@@ -178,24 +184,23 @@ enum LauncherWindowLayout {
     }
 }
 
-// 1: Play (the window's settings are in the environment), 0: the player quit, 2: no window (no launcher.json, or "Show this window at launch" off): launcher.c applies the saved choices
+// 1 = Play, 0 = Quit, 2 = no window (launcher.c applies saved choices), -1 = failed to apply the user's selection.
 @_cdecl("dm_mac_launcher")
 public func dmMacLauncher() -> Int32 {
-    guard let url = Bundle.main.resourceURL?.appendingPathComponent("dm/launcher.json"), let data = try? Data(contentsOf: url) else { return 2 }
-    guard let file = try? JSONDecoder().decode(SettingsFile.self, from: data), !file.settings.isEmpty else { fputs("[RED] launcher: dm/launcher.json cannot be read; starting the game\n", stderr); return 2 }
+    let settings = SettingsFile.bundledSettings()
+    guard !settings.isEmpty || dm_users_count() > 1 else { return 2 }
     if (UserDefaults.standard.object(forKey: "window.show") as? Bool) == false && !NSEvent.modifierFlags.contains(.option) {
         fputs("launcher: settings window off (hold Option at launch to show it)\n", stderr)
         return 2
     }
-    let model = LauncherModel(file.settings)
+    let model = LauncherModel(settings)
     let app = NSApplication.shared, launcher = Launcher(model)
     app.setActivationPolicy(.regular)
     app.delegate = launcher
-    fputs("launcher: \(file.settings.count) settings shown\n", stderr)
+    fputs("launcher: \(settings.count) settings shown\n", stderr)
     app.run()
     CATransaction.flush()   // finish's order-out
     app.setActivationPolicy(.prohibited)   // the host is the game's app from here on
     guard launcher.play else { fputs("launcher: quit without starting the game\n", stderr); return 0 }
-    model.apply()
-    return 1
+    return model.apply() ? 1 : -1
 }

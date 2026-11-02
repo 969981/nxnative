@@ -1,2 +1,3 @@
-// The Objective-C functions Launcher.swift calls (CloudSaves.h). project.yml points SWIFT_OBJC_BRIDGING_HEADER here.
+// Native APIs used by the Swift launcher.
 #import "CloudSaves.h"
+#include "local_users.h"

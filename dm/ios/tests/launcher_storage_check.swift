@@ -5,6 +5,30 @@ import Foundation
     static func main() {
         var failed = 0
         func expect(_ c: Bool, _ what: String) { print((c ? "PASS " : "FAIL ") + what); if !c { failed += 1 } }
+        if CommandLine.arguments[1] == "--duplicate-names" {
+            let m = LauncherModel([])
+            expect(m.userLabels == ["Alex · 000000000000000000000000deadbeef", "Alex · 010000000000000000000000deadbeef", "Alex · abcdef01", "Bob"], "only duplicate nicknames receive distinguishing picker labels, including IDs with matching suffixes")
+            expect(String(cString: dm_users_nickname_at(0)) == "Alex" && String(cString: dm_users_nickname_at(1)) == "Alex", "guest nicknames stay verbatim")
+            exit(failed == 0 ? 0 : 1)
+        }
+        if CommandLine.arguments[1] == "--users" {
+            let m = LauncherModel([])
+            expect(m.userLabels == ["Alice", "Bob"], "the picker offers nicknames in manifest order")
+            if getenv("DM_USER_ID") != nil {
+                expect(m.userLocked && m.selectedUser == 1, "a launch override shows the locked user in the picker")
+                expect(m.personalSaveIsLocal, "a secondary user's cloud-save note says their personal save stays local")
+                m.selectedUser = 0
+            } else {
+                expect(!m.userLocked && m.selectedUser == 0, "the first user is preselected")
+                expect(!m.personalSaveIsLocal, "the original user's save can sync")
+                m.selectedUser = 1
+                expect(m.personalSaveIsLocal, "the cloud-save note follows the picker before Play")
+                expect(dm_users_selected_index() == 0 && getenv("DM_USER_ID") == nil, "editing the picker leaves the guest selection alone until Play")
+            }
+            expect(m.apply(), "Play accepts the selection")
+            expect(dm_users_selected_index() == 1 && getenv("DM_USER_ID").map { String(cString: $0) } == CommandLine.arguments[2], "Play gives the guest and any child host the selected or locked user")
+            exit(failed == 0 ? 0 : 1)
+        }
         let file = try! JSONDecoder().decode(SettingsFile.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])))
         let suite = "nxnative.launcher-test." + UUID().uuidString
         let d = UserDefaults(suiteName: suite)!
