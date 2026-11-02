@@ -40,3 +40,6 @@ present_interval	display
 # ---- Shader split ----
 shader_groups	/Data/=data
 shader_note	Pokémon Brilliant Diamond shaders
+# The upstairs TV supplies a zero brightness-pulse period; preserve its image without invalid arithmetic.
+# Exact original-console nonfinite behavior is unverified; see README.md, Zero TV pulse period.
+shader_zero_period_guard	b8b1925cc16f8247:4:9.w:10.x
