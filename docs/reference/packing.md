@@ -23,7 +23,7 @@
 - **Symptom:** the iOS and Mac launchers show English settings and buttons regardless of the app's language, and contributors must edit source code to translate them.
 - **Cause:** UI literals have no bundled string table; dynamic labels from `launcher.json` are rendered verbatim and have no translation keys.
 - **Fix:** both launchers look up a shared `Launcher.strings` table. The settings generator adds optional stable keys while retaining English fallbacks and the original values. Both app packers include the locale resources. The translation and compatibility contract is in [Translating the built-in launchers](../frontends.md#translating-the-built-in-launchers).
-- **Found on:** [issue #775](https://github.com/seedds/nxnative/issues/775), covering both launchers. Native synthetic bundle tests cover translation, fallback, section identity and saved values; no game files are required.
+- **Found on:** [issue #775](https://github.com/seedds/nxnative/issues/775), covering both launchers.
 
 ## IPA archives
 

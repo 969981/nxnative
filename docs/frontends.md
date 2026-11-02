@@ -60,7 +60,7 @@ The launcher follows the app's preferred system language. **Game language** (`DM
 - Settings use stable keys: `setting.<env>.label`, `setting.<env>.note` (only for a nonempty note), `section.<section>`, and `setting.<env>.option.<value>`. For example, `setting.DM_OPMODE.option.0` translates **Handheld**; the stored value remains `"0"`. Adding a setting also adds its English entries to the shared table; the catalog test checks them against `settings.tsv` and the language list.
 - Third-party front ends can read the same tables or map these keys to their own localization system. They must keep raw option values, section identities, defaults and persistence keys unchanged.
 
-`python3 -m unittest dm.ios.tests.test_launcher_localization dm.ios.tests.test_launcher_storage dm.tools.tests.test_launcher_settings` checks the catalog, native bundle lookup, missing-key and legacy JSON fallbacks, and saved choices using synthetic data on a Mac. No translated language is claimed complete until its table is contributed and reviewed.
+No translated language is claimed complete until its table is contributed and reviewed.
 
 ## Starting a game
 
