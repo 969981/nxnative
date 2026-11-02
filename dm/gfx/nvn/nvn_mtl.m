@@ -958,13 +958,18 @@ static inline id<MTL4RenderCommandEncoder> enc_r_begin_pass(MTL4RenderPassDescri
     g_game_barrier = 0;
     [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; gp_begin(e, 'R', d); return e;
 }
+// Texture representation shadows are refreshed after GPU writers, independently of object/view generations.
+static _Atomic uint64_t g_p16_epoch = 1; static _Atomic unsigned g_p16_count;
+static _Thread_local unsigned g_p16_busy;
+static inline void packed16_written(void) { if (!g_p16_busy && atomic_load_explicit(&g_p16_count, memory_order_relaxed)) atomic_fetch_add_explicit(&g_p16_epoch, 1, memory_order_relaxed); }
 static inline void enc_r_end_pass(id e) {
+    packed16_written();
     if (!barrier_game() || g_image_heap_n) { m4_end(e); return; }
     gp_end(e); [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageVertex | MTLStageMesh | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageDispatch | MTLStageBlit visibilityOptions:resource_vis()];
     [e endEncoding]; g_last_end_relaxed = 1;
 }
 static inline id<MTL4RenderCommandEncoder> enc_r_begin(MTL4RenderPassDescriptor *d) { id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; gp_begin(e, 'R', d); return e; }
-static inline void enc_r_end(id e) { m4_end(e); }
+static inline void enc_r_end(id e) { m4_end(e); packed16_written(); }
 static inline void enc_r_pso(id<MTL4RenderCommandEncoder> e, id<MTLRenderPipelineState> p) { [e setRenderPipelineState:p]; }
 static inline void enc_r_dss(id<MTL4RenderCommandEncoder> e, id<MTLDepthStencilState> s) { [e setDepthStencilState:s]; }
 static inline void enc_r_viewport(id<MTL4RenderCommandEncoder> e, MTLViewport v) { [e setViewport:v]; }
@@ -999,17 +1004,17 @@ static inline id<MTLComputeCommandEncoder> enc_c_begin_concurrent(id<MTLCommandB
 static inline void enc_c_end(id e) { m4_end(e); }
 static inline void enc_c_pso(id e, id<MTLComputePipelineState> p) { [e setComputePipelineState:p]; }
 static inline void enc_c_args(id e, uint64_t gpu, NSUInteger i) { (void)e; if (rec_on()) rec_table_op(RO_T_ADDR, g_ct, gpu, i); else [g_ct setAddress:gpu atIndex:i]; }
-static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { [e dispatchThreadgroups:n threadsPerThreadgroup:t]; }
-static inline void enc_c_dispatch_indirect(id e, uint64_t ind, MTLSize t) { [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:ind threadsPerThreadgroup:t]; }
+static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { [e dispatchThreadgroups:n threadsPerThreadgroup:t]; packed16_written(); }
+static inline void enc_c_dispatch_indirect(id e, uint64_t ind, MTLSize t) { [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:ind threadsPerThreadgroup:t]; packed16_written(); }
 static inline id enc_b_begin(id cb) { return [cb respondsToSelector:@selector(beginCommandBufferWithAllocator:)] ? [cb computeCommandEncoder] : [cb blitCommandEncoder]; }
 static inline void enc_b_end(id e) { m4_end(e); }
-static inline void enc_b_copy_buffer(id e, id<MTLBuffer> s, NSUInteger so, id<MTLBuffer> d, NSUInteger doff, NSUInteger n) { [e copyFromBuffer:s sourceOffset:so toBuffer:d destinationOffset:doff size:n]; }
-static inline void enc_b_copy_buffer_texture(id e, id<MTLBuffer> s, NSUInteger so, NSUInteger row, NSUInteger img, MTLSize z, id<MTLTexture> d, NSUInteger sl, NSUInteger lv, MTLOrigin o) { [e copyFromBuffer:s sourceOffset:so sourceBytesPerRow:row sourceBytesPerImage:img sourceSize:z toTexture:d destinationSlice:sl destinationLevel:lv destinationOrigin:o]; }
+static inline void enc_b_copy_buffer(id e, id<MTLBuffer> s, NSUInteger so, id<MTLBuffer> d, NSUInteger doff, NSUInteger n) { [e copyFromBuffer:s sourceOffset:so toBuffer:d destinationOffset:doff size:n]; packed16_written(); }
+static inline void enc_b_copy_buffer_texture(id e, id<MTLBuffer> s, NSUInteger so, NSUInteger row, NSUInteger img, MTLSize z, id<MTLTexture> d, NSUInteger sl, NSUInteger lv, MTLOrigin o) { [e copyFromBuffer:s sourceOffset:so sourceBytesPerRow:row sourceBytesPerImage:img sourceSize:z toTexture:d destinationSlice:sl destinationLevel:lv destinationOrigin:o]; packed16_written(); }
 static inline void enc_b_copy_texture_buffer(id e, id<MTLTexture> s, NSUInteger sl, NSUInteger lv, MTLOrigin o, MTLSize z, id<MTLBuffer> d, NSUInteger doff, NSUInteger row, NSUInteger img) { [e copyFromTexture:s sourceSlice:sl sourceLevel:lv sourceOrigin:o sourceSize:z toBuffer:d destinationOffset:doff destinationBytesPerRow:row destinationBytesPerImage:img]; }
 // The same with a blit option: one plane of a combined depth / stencil texture (MTLBlitOptionDepthFromDepthStencil)
-static inline void enc_b_copy_buffer_texture_opt(id e, id<MTLBuffer> s, NSUInteger so, NSUInteger row, NSUInteger img, MTLSize z, id<MTLTexture> d, NSUInteger sl, NSUInteger lv, MTLOrigin o, MTLBlitOption opt) { [e copyFromBuffer:s sourceOffset:so sourceBytesPerRow:row sourceBytesPerImage:img sourceSize:z toTexture:d destinationSlice:sl destinationLevel:lv destinationOrigin:o options:opt]; }
+static inline void enc_b_copy_buffer_texture_opt(id e, id<MTLBuffer> s, NSUInteger so, NSUInteger row, NSUInteger img, MTLSize z, id<MTLTexture> d, NSUInteger sl, NSUInteger lv, MTLOrigin o, MTLBlitOption opt) { [e copyFromBuffer:s sourceOffset:so sourceBytesPerRow:row sourceBytesPerImage:img sourceSize:z toTexture:d destinationSlice:sl destinationLevel:lv destinationOrigin:o options:opt]; packed16_written(); }
 static inline void enc_b_copy_texture_buffer_opt(id e, id<MTLTexture> s, NSUInteger sl, NSUInteger lv, MTLOrigin o, MTLSize z, id<MTLBuffer> d, NSUInteger doff, NSUInteger row, NSUInteger img, MTLBlitOption opt) { [e copyFromTexture:s sourceSlice:sl sourceLevel:lv sourceOrigin:o sourceSize:z toBuffer:d destinationOffset:doff destinationBytesPerRow:row destinationBytesPerImage:img options:opt]; }
-static inline void enc_b_copy_texture(id e, id<MTLTexture> s, NSUInteger sl, NSUInteger lv, MTLOrigin so, MTLSize z, id<MTLTexture> d, NSUInteger dl, NSUInteger dv, MTLOrigin doo) { [e copyFromTexture:s sourceSlice:sl sourceLevel:lv sourceOrigin:so sourceSize:z toTexture:d destinationSlice:dl destinationLevel:dv destinationOrigin:doo]; }
+static inline void enc_b_copy_texture(id e, id<MTLTexture> s, NSUInteger sl, NSUInteger lv, MTLOrigin so, MTLSize z, id<MTLTexture> d, NSUInteger dl, NSUInteger dv, MTLOrigin doo) { [e copyFromTexture:s sourceSlice:sl sourceLevel:lv sourceOrigin:so sourceSize:z toTexture:d destinationSlice:dl destinationLevel:dv destinationOrigin:doo]; packed16_written(); }
 static void blit_note(void);   // Per-pass dump: a copy / buffer update ended the render pass (defined after PD)
 // Ordering inside the copy encoder: Metal 4 does not order copies / fills within one encoder (no automatic hazard tracking); an operation reading or writing a range an earlier one wrote needs an intra-encoder barrier.
 // Without it, SMBW's two updates per frame to the same uniform slot ("write 4 bytes −1, then 16 bytes of coefficients") occasionally landed in reverse order; the fountain water wave simulation took −1 as its self coefficient, diverged, and the water vertices were pushed to the top of the screen.
@@ -1344,6 +1349,7 @@ void mtl_sub_update(const void *data, uint64_t dst, uint64_t n) {
 // In-order buffer fill within the submission: all four bytes equal → fillBuffer; otherwise copied in chunks from a 64 KiB pattern buffer
 void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
     if (!n) return;
+    packed16_written();
     pend_add(dst, n, 3); g_mdx_epoch++;
     void *db; uint64_t dof;
     if (!mtl_addr(dst, n, &db, &dof)) MDIE("buffer fill address is in no memory pool dst=%#llx n=%#llx", (unsigned long long)dst, (unsigned long long)n);
@@ -1689,7 +1695,7 @@ void mtl_drain(void) { present_drop_for_suspend(); mtl_present_flush(); snap_dra
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[142];
+static int g_red_once[160];
 #define RED_ONCE(k, ...) do { if (!g_red_once[k]++) MLOG("[RED] " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
 // and the host's own vertex functions read no vertex buffers. 13 Sentinels uses stream 15, and the old 16 + stream went out of range (Metal assertion: buffer index (31) must be < 31)
@@ -1946,6 +1952,8 @@ static void pkg_absorb_take(NvPkg *pk, const tex_t *t) {
 static inline int pf_r32i(MTLPixelFormat pf) { return pf == MTLPixelFormatR32Uint || pf == MTLPixelFormatR32Sint; }
 static MTLTextureUsage img_usage(const tex_t *t, MTLPixelFormat pf) {
     if (!(t->d.flags & NVN_TEXTURE_FLAGS_IMAGE)) return 0;
+    // Writable R16 reinterpretations of RGBA4 use their own representation rather than unsupported Metal packed-image usage.
+    if (pf == MTLPixelFormatABGR4Unorm) return 0;
     return MTLTextureUsageShaderWrite | (pf_r32i(pf) ? MTLTextureUsageShaderAtomic : 0);
 }
 // Metal leaves MTLTextureUsageShaderAtomic out of a texture's usage property (0x3 for a texture made with 0x23), so it cannot be read back: every shader-writable R32Uint / R32Sint
@@ -2012,6 +2020,7 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
 // In-place upgrade: when the original texture was not created with PixelFormatView (off by default, to keep Apple GPU lossless compression) but a different-format view is needed, create a new one with the original spec + PixelFormatView, copy over every slice × level, and replace the registration.
 // Count: across the 4 screens character select / camp / wilderness / combat, 17473 textures needed a different-format view 0 times, so this is a fallback and does not rely on predicting which textures need it
 // The same upgrade adds render-target usage for a whole-level clear (clear_tex) of a texture made without it: Monster Hunter Rise clears a 32x80 packaged one
+static void packed16_rebase(id<MTLTexture> from, id<MTLTexture> to);
 static id<MTLTexture> tex_upgrade(const tex_t *t, id<MTLTexture> base, MTLTextureUsage add, MTLPixelFormat view_pf) {
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
     d.textureType = base.textureType; d.pixelFormat = base.pixelFormat; d.width = base.width; d.height = base.height; d.depth = base.depth;   // Keep the original format, only add the format-view usage
@@ -2057,6 +2066,7 @@ static id<MTLTexture> tex_upgrade(const tex_t *t, id<MTLTexture> base, MTLTextur
         defer_obj_release(base);
     }
     MLOG("texture upgraded to allow %s ser=%llu base format %lu → view format %lu (upgrades=%llu)", add & MTLTextureUsageShaderWrite ? "image writes" : add & MTLTextureUsageRenderTarget ? "render-target use" : "format views", t->serial, (unsigned long)base.pixelFormat, (unsigned long)view_pf, ++g_pfv_upgrades);
+    packed16_rebase(base, upgraded);
     return upgraded;
 }
 static id<MTLTexture> tex_upgrade_pfv(const tex_t *t, id<MTLTexture> base, MTLPixelFormat view_pf) { return tex_upgrade(t, base, MTLTextureUsagePixelFormatView, view_pf); }
@@ -2326,29 +2336,153 @@ static void zb_report(const tex_t *t, unsigned base, const char *why) {
             free(m); }
         MLOG("[zb] ser=%llu: block height log2 %d (packaged %d), stride %u, depth %u, target %d, samples %d", (unsigned long long)t->serial, (int)t->L.tileH, t->d.pkg_block_h, t->d.stride, t->d.depth, t->d.target, t->d.samples); }
 }
-// A packed 16-bit format that Metal has only with red and blue exchanged (RGB5, RGB5A1, RGB565: nvn_fmt_to_mtl's r/b swap): the bit position of red in Metal's format (blue is at bit 0), else 0.
-// Every host texture of these formats holds Metal's order, as Metal renders, clears and copies into it; only guest memory holds the guest's (red at bit 0). Bytes are converted where they cross:
-// uploads (pkg_upload_), buffer ↔ texture copies (rb_swap_gpu), ReadTexels and readbacks into storage (rb_swap_rows). Textures that read guest memory in place (linear and buffer textures, on a
-// pool's buffer) take the swap when sampled instead (tex_by_id). Tears of the Kingdom's Depths: smeared rock with red and blue exchanged (GitHub issue #183)
-static int rb_packed_shift(int f) {
+// Packed 16-bit formats with different guest / Metal component order. NVN RGBA4 has R/G/B/A at bits 0/4/8/12; Metal ABGR4 has them at 12/8/4/0, so all four nibbles reverse.
+// RGB5 / RGB5A1 / RGB565 exchange their 5-bit red and blue fields. Each conversion is its own inverse. Kind 4 means RGBA4; kinds 10 / 11 are Metal's red-field shift for the RGB5 family.
+// Every host texture holds Metal's order, as Metal renders, clears and copies into it; guest memory keeps the guest's. Convert at uploads, buffer ↔ texture copies, ReadTexels and readbacks
+// into storage. Textures reading guest memory in place (linear / buffer textures) take the format's component mapping when sampled instead (tex_by_id).
+// Super Mario RPG's battle shadowmask: raw 0x0f00 with a B/G/R/A texture mapping must read red 1, not green 1. RGB5-family conversion also fixes Tears of the Kingdom's Depths (#183).
+static int packed16_kind(int f) {
     uint32_t pf = 0; uint8_t sw[4];
-    if (!nvn_fmt_to_mtl(f, &pf, sw) || sw[0] != NVN_SWZ_B) return 0;
+    if (!nvn_fmt_to_mtl(f, &pf, sw)) return 0;
+    if (pf == MTLPixelFormatABGR4Unorm && sw[0] == NVN_SWZ_A) return 4;
+    if (sw[0] != NVN_SWZ_B) return 0;
     return pf == MTLPixelFormatB5G6R5Unorm ? 11 : pf == MTLPixelFormatBGR5A1Unorm ? 10 : 0;
 }
-// Exchanges the 5-bit red and blue fields of a region's 16-bit texels in place (rows of wb bytes, row / img apart); green and alpha stay. The same exchange both ways
-static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t row, size_t img, int shift) {
+// Converts a region's 16-bit texels in place (rows of wb bytes, row / img apart), in either direction.
+static void packed16_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t row, size_t img, int shift) {
     uint16_t m = (uint16_t)(31u | 31u << shift);
     for (size_t z = 0; z < nz; z++) for (size_t y = 0; y < rows; y++) {
         uint16_t *q = (uint16_t *)(p + z * img + y * row);
-        for (size_t i = 0; i < wb / 2; i++) q[i] = (uint16_t)((q[i] & ~m) | (q[i] & 31u) << shift | (q[i] >> shift & 31u));
+        for (size_t i = 0; i < wb / 2; i++) { uint16_t v = q[i];
+            q[i] = shift == 4 ? (uint16_t)((v & 0x000fu) << 12 | (v & 0x00f0u) << 4 | (v & 0x0f00u) >> 4 | (v & 0xf000u) >> 12)
+                              : (uint16_t)((v & ~m) | (v & 31u) << shift | (v >> shift & 31u));
+        }
     }
 }
+static int packed16_copy(id<MTLTexture> s, unsigned sl, unsigned ss, MTLOrigin so, id<MTLTexture> d, unsigned dl, unsigned ds, MTLOrigin origin, MTLSize size, int sk, int dk);
+static size_t mtl_pf_bytes(MTLPixelFormat pf);
+static int tex_cpu_written(uint64_t serial);
+// A format view reinterprets guest bytes. Packed native Metal bytes differ from those bytes, so a raw Metal format view is insufficient (RGBA4 <-> R16, for example).
+// Keep native backing and materialize another representation only at an encoding boundary. All descriptors of the same physical backing share its representation.
+@interface NvP16Rep : NSObject { @public
+    tex_t owner;
+    id<MTLTexture> base, tex;
+    int source_kind, kind, dirty;
+    uint64_t epoch, dirty_stamp;
+}
+@end
+@implementation NvP16Rep
+@end
+static NSMutableArray<NvP16Rep *> *g_p16_reps;
+static pthread_mutex_t g_p16_mu = PTHREAD_MUTEX_INITIALIZER;
+static NSMutableIndexSet *g_p16_ids;   // registered reinterpretations; protected by g_rmu
+static _Atomic unsigned g_p16_id_count;
+static id<MTLTexture> packed16_root(id<MTLTexture> t) { id<MTLTexture> root = t; while (root.parentTexture) root = root.parentTexture; return root; }
+static NSArray<NvP16Rep *> *packed16_reps(void) { if (!atomic_load_explicit(&g_p16_count, memory_order_acquire)) return nil; pthread_mutex_lock(&g_p16_mu); NSArray *a = [g_p16_reps copy]; pthread_mutex_unlock(&g_p16_mu); return a; }
+static NvP16Rep *packed16_rep(id<MTLTexture> t) {
+    if (!atomic_load_explicit(&g_p16_count, memory_order_acquire)) return nil;
+    id<MTLTexture> root = packed16_root(t); NvP16Rep *found = nil;
+    pthread_mutex_lock(&g_p16_mu);
+    for (NvP16Rep *r in g_p16_reps) if (r->tex == root) { found = r; break; }
+    pthread_mutex_unlock(&g_p16_mu); return found;
+}
+static void packed16_rebase(id<MTLTexture> from, id<MTLTexture> to) {
+    if (from == to || !atomic_load_explicit(&g_p16_count, memory_order_acquire)) return;
+    pthread_mutex_lock(&g_p16_mu);
+    for (NvP16Rep *r in g_p16_reps) if (r->base == from) { r->base = to; r->epoch = 0; }
+    pthread_mutex_unlock(&g_p16_mu);
+}
+static id<MTLTexture> packed16_canonical(id<MTLTexture> t) { NvP16Rep *r = packed16_rep(t); return r ? r->base : packed16_root(t); }
+static int packed16_encoding(const tex_t *t, id<MTLTexture> mt) {
+    NvP16Rep *r = packed16_rep(mt); if (r) return r->kind;
+    return packed16_root(mt).buffer ? 0 : packed16_kind(t->d.format);
+}
+static int packed16_transfer(NvP16Rep *r, int back) {
+    id<MTLTexture> s = back ? r->tex : r->base, d = back ? r->base : r->tex;
+    int sk = back ? r->kind : r->source_kind, dk = back ? r->source_kind : r->kind, ok = 1;
+    NSUInteger slices = s.textureType == MTLTextureType3D ? 1 : s.arrayLength * (s.textureType == MTLTextureTypeCube || s.textureType == MTLTextureTypeCubeArray ? 6 : 1);
+    g_p16_busy++;
+    for (NSUInteger lv = 0; ok && lv < s.mipmapLevelCount; lv++) {
+        MTLSize size = MTLSizeMake(MAX(s.width >> lv, 1u), MAX(s.height >> lv, 1u), s.textureType == MTLTextureType3D ? MAX(s.depth >> lv, 1u) : 1);
+        for (NSUInteger sl = 0; ok && sl < slices; sl++) ok = packed16_copy(s, (unsigned)lv, (unsigned)sl, MTLOriginMake(0, 0, 0), d, (unsigned)lv, (unsigned)sl, MTLOriginMake(0, 0, 0), size, sk, dk);
+    }
+    g_p16_busy--;
+    if (!ok) RED_ONCE(142, "packed 16-bit format view transfer failed: format %lu -> %lu", (unsigned long)s.pixelFormat, (unsigned long)d.pixelFormat);
+    return ok;
+}
+static void mirror_readback(const tex_t *t, id<MTLTexture> d, unsigned level, unsigned layer0, const NVNcopyRegion *r, const char *from, int absorb);
+static int packed16_storage_dst(const tex_t *t) {
+    if (!t->mem || !t->pool || (t->pool->flags & (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) || t->d.samples > 1 || t->d.target == NVN_TEXTURE_TARGET_BUFFER
+        || (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_COMPRESSIBLE))) return 0;
+    return t->has_layout || tex_cpu_written(t->serial);
+}
+static void packed16_views_flush(void) {
+    if (g_p16_busy) return;
+    NSArray<NvP16Rep *> *a = packed16_reps(); int wrote = 0;
+    for (NvP16Rep *r in a) if (r->dirty) { r->dirty = 0; if (packed16_transfer(r, 1)) {
+        wrote = 1;
+        if (packed16_storage_dst(&r->owner)) {
+            NSUInteger slices = r->base.textureType == MTLTextureType3D ? 1 : r->base.arrayLength * (r->base.textureType == MTLTextureTypeCube || r->base.textureType == MTLTextureTypeCubeArray ? 6 : 1);
+            for (NSUInteger lv = 0; lv < r->base.mipmapLevelCount; lv++) for (NSUInteger sl = 0; sl < slices; sl++) {
+                NVNcopyRegion region = {0, 0, 0, (int)MAX(r->base.width >> lv, 1u), (int)MAX(r->base.height >> lv, 1u), r->base.textureType == MTLTextureType3D ? (int)MAX(r->base.depth >> lv, 1u) : 1};
+                mirror_readback(&r->owner, r->base, (unsigned)lv, (unsigned)sl, &region, "format view", 1);
+            }
+        }
+    } }
+    if (wrote) { packed16_written(); for (NvP16Rep *r in a) r->epoch = 0; }
+}
+static int packed16_mark_write(id<MTLTexture> t) {
+    NvP16Rep *r = packed16_rep(t); if (!r) return 1;
+    for (NvP16Rep *q in packed16_reps()) if (q != r && q->base == r->base && q->dirty) {
+        RED_ONCE(145, "simultaneous writable packed-format aliases require different physical encodings (formats %lu and %lu)", (unsigned long)q->tex.pixelFormat, (unsigned long)t.pixelFormat); return 0;
+    }
+    r->dirty = 1; return 1;
+}
+static id<MTLTexture> packed16_view(const tex_t *t, id<MTLTexture> base, MTLPixelFormat pf, int kind, int write) {
+    if (!base || (base.pixelFormat == pf && !base.buffer && packed16_kind(t->d.format) == kind)) return base;
+    int source = packed16_encoding(t, base);
+    if (source == kind) return base;   // ordinary identity views do no allocation or copy
+    if (mtl_pf_bytes(base.pixelFormat) != 2 || mtl_pf_bytes(pf) != 2 || base.sampleCount != 1 || base.textureType == MTLTextureTypeTextureBuffer) {
+        RED_ONCE(143, "packed 16-bit format view has an incompatible layout: format %lu -> %lu, type %lu samples %lu", (unsigned long)base.pixelFormat, (unsigned long)pf, (unsigned long)base.textureType, (unsigned long)base.sampleCount); return nil;
+    }
+    id<MTLTexture> root = packed16_root(base); NvP16Rep *r = nil;
+    pthread_mutex_lock(&g_p16_mu);
+    for (NvP16Rep *q in g_p16_reps) if (q->base == root && q->kind == kind) { r = q; break; }   // R16 class views share bytes, including concurrent image writes
+    pthread_mutex_unlock(&g_p16_mu);
+    if (!r) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor new];
+        d.textureType = root.textureType; d.pixelFormat = pf; d.width = root.width; d.height = root.height; d.depth = root.depth;
+        d.arrayLength = root.arrayLength; d.mipmapLevelCount = root.mipmapLevelCount; d.sampleCount = 1; d.storageMode = MTLStorageModePrivate;
+        d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView;
+        if (!kind) d.usage |= MTLTextureUsageShaderWrite;
+        id<MTLTexture> shadow = [g_dev newTextureWithDescriptor:d];
+        if (!shadow) { RED_ONCE(144, "cannot create packed 16-bit format view: format %lu -> %lu", (unsigned long)root.pixelFormat, (unsigned long)pf); return nil; }
+        res_add(shadow); r = [NvP16Rep new]; r->owner = *t; r->base = root; r->tex = shadow; r->source_kind = source; r->kind = kind;
+        pthread_mutex_lock(&g_p16_mu); if (!g_p16_reps) g_p16_reps = [NSMutableArray array]; [g_p16_reps addObject:r]; atomic_store_explicit(&g_p16_count, (unsigned)g_p16_reps.count, memory_order_release); pthread_mutex_unlock(&g_p16_mu);
+    }
+    if (!r->dirty && (r->epoch != g_p16_epoch || r->dirty_stamp != nvn_dirty_now())) {
+        rp_end();   // preparation normally does this before binding; explicit copy/clear callers can arrive with an open pass
+        if (!packed16_transfer(r, 0)) return nil;
+        r->epoch = g_p16_epoch; r->dirty_stamp = nvn_dirty_now();
+    }
+    if (write && !packed16_mark_write(r->tex)) return nil;
+    return r->tex;
+}
+static void packed16_drop(const void *pool, uint64_t serial) {
+    pthread_mutex_lock(&g_p16_mu);
+    for (NSUInteger i = g_p16_reps.count; i; i--) { NvP16Rep *r = g_p16_reps[i - 1];
+        if ((pool && (const void *)r->owner.pool == pool) || (serial && r->owner.serial == serial)) { defer_obj_release(r->tex); [g_p16_reps removeObjectAtIndex:i - 1]; g_ser_gen++; }
+    }
+    atomic_store_explicit(&g_p16_count, (unsigned)g_p16_reps.count, memory_order_release);
+    pthread_mutex_unlock(&g_p16_mu);
+}
 static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture> reuse, MTLTextureUsage keep) {
+    packed16_written();   // upload-batch writes can reuse the same physical texture without going through the ordinary blit wrappers
     MTLTextureDescriptor *d = tex_desc(t, 1);
     if (!d) return nil;
     d.usage |= keep & (MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView);
-    int rb_shift = rb_packed_shift(t->d.format);   // the RGB565 family is repacked into Metal's order on the CPU (rb_packed_shift)
-    int direct = !rb_shift && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
+    int packed_kind = packed16_kind(t->d.format);   // packed formats are converted into Metal's order on the CPU
+    int direct = !packed_kind && stamp && direct_upload_on() && g_nvn_deswz_gpu && !(t->pool && nvn_sparse_pool(t->pool)) && nvn_deswz_gpu_direct_supported(&t->d);
     if (direct) d.usage |= MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView;
     id<MTLTexture> mt = reuse && reuse.pixelFormat == d.pixelFormat && reuse.width == d.width && reuse.height == d.height && reuse.mipmapLevelCount == d.mipmapLevelCount && reuse.textureType == d.textureType
                         && (reuse.usage & d.usage) == d.usage
@@ -2369,8 +2503,8 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     }
     g_bp_up_bytes += total;
     void *mb; uint64_t mo;
-    int use_gpu = !rb_shift && !sparse && g_nvn_deswz_gpu && mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo);   // a sparse pool's texture is gathered through its page table on the CPU
-    if (g_nvn_deswz_gpu && !use_gpu && !sparse && !rb_shift) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
+    int use_gpu = !packed_kind && !sparse && g_nvn_deswz_gpu && mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo);   // a sparse pool's texture is gathered through its page table on the CPU
+    if (g_nvn_deswz_gpu && !use_gpu && !sparse && !packed_kind) RED_ONCE(40, "swizzled texture storage is not in a memory pool; falling back to the CPU");
     if (use_gpu) {
         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
         up_begin();
@@ -2429,7 +2563,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
         size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
         for (unsigned y = 0; y < layers; y++) {
             if (nvn_deswizzle(&t->d, l, y, src, (uint8_t *)stg.contents + off, pitch)) { RED_ONCE(9, "deswizzle failed format %#x target %d", t->d.format, t->d.target); break; }
-            if (rb_shift) rb_swap_rows((uint8_t *)stg.contents + off, pitch, rows, z, pitch, pitch * rows, rb_shift);
+            if (packed_kind) packed16_rows((uint8_t *)stg.contents + off, pitch, rows, z, pitch, pitch * rows, packed_kind);
             if (zb && l < 16) { const uint64_t *q = (const uint64_t *)((const uint8_t *)stg.contents + off); size_t nb = pitch * rows * z / 16;
                 for (size_t i = 0; i < nb; i++) g_zb[l] += !(q[2 * i] | q[2 * i + 1]);
                 g_zb_tot[l] += (uint32_t)nb; }
@@ -2763,7 +2897,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
             id<MTLTexture> reuse = nil;
             if (pk->spare) { pthread_mutex_lock(&g_mu); uint64_t done = g_done; pthread_mutex_unlock(&g_mu); if (pk->spare_fence <= done && pk->spare.usage == pk->tex.usage) reuse = pk->spare; }
             uint64_t st, vg = nvn_sparse_gen(); id<MTLTexture> nt = pkg_upload(t, &st, reuse, pk->tex.usage);
-            if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt;
+            if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; packed16_rebase(old, nt);
                 if (pk->spare && pk->spare != nt) defer_obj_release(pk->spare);   // still in use, or of another shape: retired as before
                 if (pk->sparse) sparse_view(pk, t);
                 zb_report(t, pk->sparse ? (unsigned)pk->vbase : 0, "re-upload");
@@ -3343,6 +3477,7 @@ static void rp_end(void) { if (g_enc) { AP_B;
     zskip_commit_clears(); g_enc = nil; g_enc_geo_nocolor = 0; g_rt_merged = 0; g_sm_pass = 0; g_rt_range_active = g_rt_range_pending = 0; pg_end_render(); ts_after(); ms_after(); if (g_lp.count) lp_finish(); fz_end();
     if (g_nubd && g_nubd >= ubd_lazy()) ubd_flush();   // the inline updates deferred in this pass, in order (see mtl_sub_update); across passes they wait for the next copy or dispatch (blit_raw)
     if (g_nbcrt) bcrt_flush();   // blocks drawn into shadows go back into their compressed textures
+    packed16_views_flush();   // writable format views become visible through every descriptor before storage readback
     if (g_nrtm) rt_mirror_flush();
 #ifdef NVN_RT_RANGE_TEST
     rr_finish(ranged);
@@ -3462,6 +3597,13 @@ static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const v
     a.texture = base;
     if (has_v && v->set_levels) a.level = v->base_level;
     if (has_v && v->set_layers) { if (t->d.target == 2) a.depthPlane = v->min_layer; else a.slice = v->min_layer; }
+    uint32_t p16pf = (uint32_t)base.pixelFormat; uint8_t p16sw[4];
+    int p16kind = packed16_kind(has_v && v->set_format ? v->format : t->d.format);
+    if (has_v && v->set_format) nvn_fmt_to_mtl(v->format, &p16pf, p16sw);
+    if (t->d.format == NVN_FORMAT_RGBA4 || (has_v && v->set_format && v->format == NVN_FORMAT_RGBA4)) {
+        base = packed16_view(t, base, (MTLPixelFormat)p16pf, p16kind, 1); a.texture = base;
+        if (!base) return;
+    }
     if (base && mtl_fmt_block(base.pixelFormat)) { if (!bcrt_attach(a, base, v, has_v)) { rt_view_fmt(base, v, has_v); a.texture = nil; } return; }   // compressed formats: a shadow or nothing (see rt_view_fmt)
     if (base && mtl_fmt_depth(base.pixelFormat) && bcrt_attach(a, base, v, has_v)) return;   // a depth texture through a colour view: a shadow (see shrt_block)
     // A view that changes the format is attached as a Metal view of that format (pipeline formats follow the attachment). SMBW's last pass writes the RGBA8 swapchain texture through an RGBA8_SRGB view, so the hardware encodes sRGB on write;
@@ -3525,7 +3667,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         if (g_xv_n) { xv_ent *xe = xv_find(R.rt.color[i]->serial, (uint32_t)pd.colorAttachments[i].level, (uint32_t)pd.colorAttachments[i].slice);
             if (xe && (xe->state == XV_INVALID || xe->state == XV_PROBE)) { if (pd.colorAttachments[i].loadAction == MTLLoadActionLoad) { xv_ent copy = *xe; xv_violation(&copy, "old content loaded as an attachment"); } else xv_good(xe); } }
         pd.colorAttachments[i].storeAction = MTLStoreActionStore;
-        rt_mirror_add(R.rt.color[i], pd.colorAttachments[i].texture, pd.colorAttachments[i].level, pd.colorAttachments[i].slice, i);
+        rt_mirror_add(R.rt.color[i], packed16_canonical(pd.colorAttachments[i].texture), pd.colorAttachments[i].level, pd.colorAttachments[i].slice, i);
     }
     if (g_sm_plan.on && !clear_only && pd.colorAttachments[0].texture && !R.rt.depth) {   // slice-merged pass (see g_sm_plan): the attachment holds every layer the draws reach
         MTLRenderPassColorAttachmentDescriptor *c = pd.colorAttachments[0];
@@ -4345,7 +4487,7 @@ static void vc_put(uint64_t ser, const void *pool, const vc_key *k, id<MTLTextur
     if (s->view[i]) { defer_obj_unref((__bridge id)s->view[i]); CFRelease(s->view[i]); }
     s->k[i] = *k; s->view[i] = (void *)CFBridgingRetain(v); g_vc_new++;
 }
-void mtl_vc_drop(uint64_t ser) { os_unfair_lock_lock(&g_rmu); vc_set *s = nvn_hm_del(&g_vc, &ser); if (s) vc_set_free(s); os_unfair_lock_unlock(&g_rmu); }
+void mtl_vc_drop(uint64_t ser) { os_unfair_lock_lock(&g_rmu); vc_set *s = nvn_hm_del(&g_vc, &ser); if (s) vc_set_free(s); packed16_drop(NULL, ser); os_unfair_lock_unlock(&g_rmu); }
 void mtl_vc_stats(unsigned *n, uint64_t *hit, uint64_t *made) { os_unfair_lock_lock(&g_rmu); *n = g_vc.n; *hit = g_vc_hit; *made = g_vc_new; os_unfair_lock_unlock(&g_rmu); }
 static void vc_drop_pool(const void *pool) {   // caller holds g_rmu
     for (uint32_t i = 0; i < g_vc.cap;) {   // a deletion shifts later entries back into slot i: look at it again
@@ -4425,12 +4567,14 @@ void mtl_tb2_stats(uint64_t *binds, uint64_t *made, uint64_t *fail, uint64_t *co
 // the game can free the object, so for a reader holding g_rmu an ID not marked names a pool object that still exists. Under g_rmu
 static void treg_gone(treg_t *r) {
     r->gone = 1;
+    [g_p16_ids removeIndex:(NSUInteger)(r - g_treg)]; atomic_store_explicit(&g_p16_id_count, (unsigned)g_p16_ids.count, memory_order_release);
     if (r->view) { defer_obj_unref((__bridge id)r->view); CFRelease(r->view); r->view = NULL; r->view_id = r->view_rid = 0; treg_drop_im(r); }
 }
 static void treg_drop_pool_views(const void *pool) {
     os_unfair_lock_lock(&g_rmu);
     vc_drop_pool(pool);
     for (int i = 0; i < g_ntreg; i++) if (g_treg[i].ok && (const void *)g_treg[i].t.pool == pool) treg_gone(&g_treg[i]);
+    packed16_drop(pool, 0);
     os_unfair_lock_unlock(&g_rmu);
 }
 void mtl_reg_tex_gone(int tid) {
@@ -4451,6 +4595,11 @@ void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
         g_reg_gen++;
         treg_unlink(id_); treg_drop_views(rr);
         rr->ok = t != NULL; if (t) rr->t = *t; rr->has_v = v != NULL; if (v) rr->v = *v;
+        uint32_t p16pf = 0; uint8_t p16sw[4];
+        if (t && v && v->set_format && (t->d.format == NVN_FORMAT_RGBA4 || v->format == NVN_FORMAT_RGBA4) && nvn_fmt_to_mtl(v->format, &p16pf, p16sw) && p16pf && packed16_kind(t->d.format) != packed16_kind(v->format)) {
+            if (!g_p16_ids) g_p16_ids = [NSMutableIndexSet indexSet]; [g_p16_ids addIndex:(NSUInteger)tid];
+        } else [g_p16_ids removeIndex:(NSUInteger)tid];
+        atomic_store_explicit(&g_p16_id_count, (unsigned)g_p16_ids.count, memory_order_release);
         rr->retired = 0; rr->transient_sub = 0;
         if (t && t->serial) {
             pthread_mutex_lock(&g_smu); rr->retired = !nvn_hm_get(&g_tex_live, &t->serial); pthread_mutex_unlock(&g_smu);
@@ -4532,21 +4681,26 @@ static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
     rp->view_pkg = (rp->t.has_layout || tex_cpu_written(rp->t.serial)) && rp->t.mem;
     if (v) {   // The serial table or guest memory has changed: check whether the base texture was re-uploaded and replaced; if so the view is invalidated
         id<MTLTexture> cur = treg_tex(rp);
-        if (cur == v || v.parentTexture == cur) { rp->view_ser = sg; rp->view_dirty = dg; return v; }
+        if (cur == v || v.parentTexture == cur || (g_p16_ids && [g_p16_ids containsIndex:(NSUInteger)tid] && packed16_canonical(v) == cur)) { rp->view_ser = sg; rp->view_dirty = dg; return v; }
         defer_obj_unref(v); CFRelease(rp->view); rp->view = NULL; rp->view_rid = 0; v = nil;
     }
     treg_t r = *rp;
     id<MTLTexture> base = treg_tex(rp);
     if (!base) { if (rp->gone) { static uint64_t n; if (n++ < 4) MLOG("texture ID %d read after its memory pool was finalized ser=%llu %ux%u format %#x: treated as an empty slot (%llu so far)", tid, (unsigned long long)rp->t.serial, rp->t.d.width, rp->t.d.height, rp->t.d.format, (unsigned long long)n); } return nil; }
+    if (r.has_v && r.v.set_format && (r.t.d.format == NVN_FORMAT_RGBA4 || r.v.format == NVN_FORMAT_RGBA4)) {
+        uint32_t pf = 0; uint8_t swz[4];
+        if (nvn_fmt_to_mtl(r.v.format, &pf, swz) && pf) base = packed16_view(&r.t, base, (MTLPixelFormat)pf, packed16_kind(r.v.format), 0);
+        if (!base) return nil;
+    }
     v = base;
     // Channel swizzle: the view's if set, otherwise the one from texture building; identity builds no view (SMBW's font cache is (1 1 1 R): without the swizzle glyphs become white blocks).
-    // Its channels name components of the NVN format, which the format's own mapping finds in Metal's (nvn_fmt_to_mtl: alpha 1 for RGBX and the like, red and blue swapped for the RGB565 family),
+    // Its channels name components of the NVN format, which the format's own mapping finds in Metal's (nvn_fmt_to_mtl: alpha 1 for RGBX and the like, channels reversed for RGBA4, red and blue swapped for the RGB565 family),
     // the view format's if Metal has it, else the texture's (GitHub PR #66: The Legend of Zelda: Echoes of Wisdom's hearts are an RGB565 mask, drawn as red rectangles without the swap).
-    // The swap is for bits in the guest's order, so only for textures that read guest memory in place (linear and buffer textures): every other host texture holds Metal's order, uploads
-    // included (rb_packed_shift)
+    // The format mapping is for bits in the guest's order, so only for textures that read guest memory in place (linear and buffer textures): every other host texture holds Metal's order, uploads
+    // included (packed16_kind)
     uint8_t sw[4] = {MTLTextureSwizzleRed, MTLTextureSwizzleGreen, MTLTextureSwizzleBlue, MTLTextureSwizzleAlpha}, fsw[4]; int need_sw = 0; uint32_t fpf = 0;
     if (!(r.has_v && r.v.set_format && nvn_fmt_to_mtl(r.v.format, &fpf, fsw) && fpf)) nvn_fmt_to_mtl(r.t.d.format, NULL, fsw);
-    if (fsw[0] != MTLTextureSwizzleRed && !base.buffer) { fsw[0] = MTLTextureSwizzleRed; fsw[2] = MTLTextureSwizzleBlue; }
+    if (!base.buffer) for (int c = 0; c < 4; c++) if (fsw[c] >= MTLTextureSwizzleRed) fsw[c] = (uint8_t)(MTLTextureSwizzleRed + c);
     if (r.has_v && r.v.set_swizzle) memcpy(sw, r.v.swz, 4);
     else if (r.t.set_swz) for (int c = 0; c < 4; c++) sw[c] = (uint8_t)(r.t.swz >> (3 * c) & 7);
     for (int c = 0; c < 4; c++) {
@@ -4713,23 +4867,68 @@ static id<MTLTexture> img_fit(int tid, id<MTLTexture> t, int dpf, uint64_t *rid)
     size_t n = mtl_pf_bytes(t.pixelFormat); int u = dpf == NVN_DPF_UINT, cls = dpf != NVN_DPF_FLOAT && mtl_pf_dpf(t.pixelFormat) != dpf;
     MTLPixelFormat pf = !cls ? t.pixelFormat : n == 1 ? (u ? MTLPixelFormatR8Uint : MTLPixelFormatR8Sint) : n == 2 ? (u ? MTLPixelFormatR16Uint : MTLPixelFormatR16Sint) : n == 4 ? (u ? MTLPixelFormatR32Uint : MTLPixelFormatR32Sint)
                       : n == 8 ? (u ? MTLPixelFormatRG32Uint : MTLPixelFormatRG32Sint) : n == 16 ? (u ? MTLPixelFormatRGBA32Uint : MTLPixelFormatRGBA32Sint) : MTLPixelFormatInvalid;
+    NSUInteger l0 = t.parentTexture ? t.parentRelativeLevel : 0, s0 = t.parentTexture ? t.parentRelativeSlice : 0;
     id<MTLTexture> base = t.parentTexture ? t.parentTexture : t;
     if (pf == MTLPixelFormatInvalid || tid <= 0 || tid >= g_ntreg) {
         RED_ONCE(106, "image read as %s in the shader, texture of Metal format %lu (texture ID %d): no view of that class, bound as is (reads undefined)", u ? "uint" : "int", (unsigned long)t.pixelFormat, tid); return nil; }
+    treg_t *r = &g_treg[tid];
+    if (r->t.d.format == NVN_FORMAT_RGBA4 || packed16_rep(base)) {
+        if (r->im && r->im_of == (__bridge void *)t && ((__bridge id<MTLTexture>)r->im).pixelFormat == pf && packed16_canonical((__bridge id<MTLTexture>)r->im) == packed16_canonical(t)) {
+            *rid = r->im_rid; return (__bridge id<MTLTexture>)r->im;
+        }
+        int kind = cls ? 0 : packed16_kind(r->has_v && r->v.set_format ? r->v.format : r->t.d.format);
+        base = packed16_view(&r->t, packed16_canonical(base), pf, kind, 0);
+        if (!base) return nil;
+    }
     if (cls && !(base.usage & MTLTextureUsagePixelFormatView)) {   // made without the format-view usage (it costs lossless compression, so textures get it only when needed): upgraded before the next
         int seen = 0; for (int i = 0; i < g_imfit_npend; i++) seen |= g_imfit_pend[i] == tid;   // draw pass opens, as an upgrade copies the texture and so cannot run inside this draw's pass;
         if (!seen && g_imfit_npend < 16) g_imfit_pend[g_imfit_npend++] = tid;                  // until then the slot is bound as is
         return nil; }
-    treg_t *r = &g_treg[tid];
-    if (r->im && r->im_of == (__bridge void *)t && ((__bridge id<MTLTexture>)r->im).pixelFormat == pf) { *rid = r->im_rid; return (__bridge id<MTLTexture>)r->im; }
+    if (r->im && r->im_of == (__bridge void *)t && ((__bridge id<MTLTexture>)r->im).pixelFormat == pf && packed16_root((__bridge id<MTLTexture>)r->im) == base) { *rid = r->im_rid; return (__bridge id<MTLTexture>)r->im; }
     if (r->im) { defer_obj_unref((__bridge id)r->im); CFRelease(r->im); r->im = r->im_of = NULL; r->im_rid = 0; }
-    NSUInteger l0 = t.parentTexture ? t.parentRelativeLevel : 0, s0 = t.parentTexture ? t.parentRelativeSlice : 0;
     NSUInteger ns = t.textureType == MTLTextureType3D ? 1 : t.arrayLength * (t.textureType == MTLTextureTypeCube || t.textureType == MTLTextureTypeCubeArray ? 6 : 1);
     id<MTLTexture> v = [base newTextureViewWithPixelFormat:pf textureType:t.textureType levels:NSMakeRange(l0, t.mipmapLevelCount) slices:NSMakeRange(s0, ns)];
     if (!v) { RED_ONCE(107, "cannot create the image view of class %s (texture ID %d, Metal format %lu)", u ? "uint" : "int", tid, (unsigned long)t.pixelFormat); return nil; }
     { static int once; if (cls && !once++) MLOG("image read in another class than its texture: first case texture ID %d Metal format %lu → %lu", tid, (unsigned long)t.pixelFormat, (unsigned long)pf); }
     r->im = (void *)CFBridgingRetain(v); r->im_of = (__bridge void *)t; r->im_rid = v.gpuResourceID._impl;
     *rid = r->im_rid; return v;
+}
+static uint32_t ubo_handle(int stage, int reg, int off);
+static int ubo_tex_id(uint32_t h);
+static int packed16_used(NvProg *pr, unsigned stages, int tid);
+// Resolve only live representations read by this program. Unused registered views must not split unrelated draw passes.
+static void packed16_prepare(NvProg *pr, unsigned stages) {
+    if (!atomic_load_explicit(&g_p16_id_count, memory_order_acquire) && !atomic_load_explicit(&g_p16_count, memory_order_acquire)) return;
+    os_unfair_lock_lock(&g_rmu);
+    NSMutableIndexSet *ids = [NSMutableIndexSet indexSet];
+    for (NSUInteger i = g_p16_ids ? g_p16_ids.firstIndex : NSNotFound; i != NSNotFound; i = [g_p16_ids indexGreaterThanIndex:i])
+        if (i < (NSUInteger)g_ntreg && g_treg[i].ok && !g_treg[i].gone && packed16_used(pr, stages, (int)i)) [ids addIndex:i];
+    int need = 0;
+    for (NSUInteger i = ids.firstIndex; i != NSNotFound; i = [ids indexGreaterThanIndex:i]) { treg_t *r = &g_treg[i];
+        if (!r->view || r->view_ser != g_ser_gen || (r->view_pkg && r->view_dirty != nvn_dirty_now())) need = 1;
+    }
+    os_unfair_lock_unlock(&g_rmu);
+    NSMutableArray<NvP16Rep *> *used = [NSMutableArray array];
+    for (NvP16Rep *r in packed16_reps()) {
+        int active = !pr;
+        os_unfair_lock_lock(&g_rmu);
+        int link = (int)(uintptr_t)nvn_hm_get(&g_treg_serial, &r->owner.serial);
+        while (!active && link) { int tid = link - 1; active = !g_treg[tid].gone && packed16_used(pr, stages, tid); link = g_treg[tid].next; }
+        for (NSUInteger i = ids.firstIndex; !active && i != NSNotFound; i = [ids indexGreaterThanIndex:i]) active = packed16_canonical((__bridge id<MTLTexture>)g_treg[i].view) == r->base;
+        os_unfair_lock_unlock(&g_rmu);
+        if (!active) continue;
+        [used addObject:r];
+        if (r->dirty || r->epoch != g_p16_epoch || r->dirty_stamp != nvn_dirty_now()) need = 1;
+        if (g_enc) for (int k = 0; k < R.rt.n; k++) if (R.rt.color[k] && packed16_canonical(tex_mtl(R.rt.color[k])) == r->base) need = 1;
+    }
+    if (!need) return;
+    rp_end();
+    os_unfair_lock_lock(&g_rmu);
+    for (NSUInteger i = ids.firstIndex; i != NSNotFound; i = [ids indexGreaterThanIndex:i]) tex_by_id((int)i);
+    os_unfair_lock_unlock(&g_rmu);
+    for (NvP16Rep *r in used) if (!r->dirty && (r->epoch != g_p16_epoch || r->dirty_stamp != nvn_dirty_now())) {
+        if (packed16_transfer(r, 0)) { r->epoch = g_p16_epoch; r->dirty_stamp = nvn_dirty_now(); }
+    }
 }
 static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void **out) {
     if (tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now())) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
@@ -7088,6 +7287,9 @@ static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy
 static id<MTLTexture> img_binding(int tid, const nvn_rbind *b, uint64_t *rid, int *real) {
     void *tv = NULL; *rid = tid ? tex_fast_rid(tid, &tv) : 0;
     id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+    if (t && tid > 0 && tid < g_ntreg && g_treg[tid].t.d.format == NVN_FORMAT_RGBA4 && b->dpf != NVN_DPF_FLOAT && mtl_pf_bytes(t.pixelFormat) == 2) {
+        uint64_t r2 = 0; id<MTLTexture> v = img_fit(tid, t, b->dpf, &r2); if (v) { t = v; *rid = r2; }
+    }
     int swz_only = t && !(t.usage & MTLTextureUsageShaderWrite) && (t.parentTexture.usage & MTLTextureUsageShaderWrite);
     if (t && (b->rw || b->atom) && !(t.usage & MTLTextureUsageShaderWrite) && !swz_only) {
         const tex_t *tt = tid > 0 && tid < g_ntreg && g_treg[tid].ok ? &g_treg[tid].t : NULL;
@@ -7100,6 +7302,7 @@ static id<MTLTexture> img_binding(int tid, const nvn_rbind *b, uint64_t *rid, in
         uint64_t r2 = 0; id<MTLTexture> v = img_fit(tid, t, b->dpf, &r2);
         if (v) { t = v; *rid = r2; } else if (swz_only) t = nil;
     }
+    if ((b->rw || b->atom) && !packed16_mark_write(t)) t = nil;   // loading was completed by image_prepare, before the encoder/pipeline exists
     *real = t != nil;
     if (!t) { t = dummy_img(b->dtt, b->dpf); *rid = g_dummy_img_rid[b->dtt & 7][b->dpf & 3]; }
     return t;
@@ -7107,7 +7310,23 @@ static id<MTLTexture> img_binding(int tid, const nvn_rbind *b, uint64_t *rid, in
 // Resolve shader image writes before an encoder is opened. Snowdrop's cf5ba107e29b51f4 writes a COMPRESSIBLE-only R16F texture registered with RegisterTexture, not RegisterImage.
 // An image bind may follow rendering into a texture created without IMAGE; upgrading it inside encode_args would
 // copy out of an attachment while its render pass was still open. Close that pass first, then replace the shared backing (all registered sampled views follow g_ser_gen).
+static int packed16_used(NvProg *pr, unsigned stages, int tid) {
+    if (!pr) return 1;
+    for (int st = 0; st < 6; st++) if (stages & (1u << st)) {
+        NvShader *sh = pr->sh[st]; if (!sh) continue;
+        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i];
+            if (b->kind == NVN_RB_TEXP && tid >= S.tex_base) return 1;
+            if ((b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) && (int)(tex_slot_h(S.tex[st], S.img[st], b->reg) & 0xfffff) == tid) return 1;
+            if (b->kind == NVN_RB_IMG && b->reg < 32 && (int)(S.img[st][b->reg] & 0xfffff) == tid) return 1;
+            if (b->kind == NVN_RB_TEXU) for (int k = 0, n = b->n ? b->n : 1; k < n; k++) if (ubo_tex_id(ubo_handle(st, b->reg, b->n ? 8 * k : b->off)) == tid) return 1;
+            if (b->kind == NVN_RB_TEXD) for (int k = 0; k < b->n && k < 128; k++) if ((int)((S.tex[st][k] ? S.tex[st][k] : S.tex[st][NVN_SEPTEX_SLOT0 + k]) & 0xfffff) == tid) return 1;
+            if (b->kind == NVN_RB_TEXA) for (int k = 0; k < b->n; k++) if ((int)(c2_handle(st, b->off + 8u * (unsigned)k) & 0xfffff) == tid) return 1;
+        }
+    }
+    return 0;
+}
 static void image_prepare(NvProg *pr, unsigned stages) {
+    packed16_prepare(pr, stages);
     if (!pr) return;
     for (int st = 0; st < 6; st++) {
         if (!(stages & (1u << st))) continue;
@@ -7120,7 +7339,7 @@ static void image_prepare(NvProg *pr, unsigned stages) {
             // The actual image binding is image intent too: some engines write a descriptor with RegisterTexture and use its handle in an image slot.
             tex_t image = g_treg[tid].t; image.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
             id<MTLTexture> base = tex_mtl(&image); while (base.parentTexture) base = base.parentTexture;
-            int upgrade = base && !(base.usage & MTLTextureUsageShaderWrite);
+            int upgrade = base && !(base.usage & MTLTextureUsageShaderWrite) && img_usage(&image, base.pixelFormat);
             os_unfair_lock_unlock(&g_rmu);
             if (!upgrade) continue;
             rp_end();
@@ -7137,6 +7356,17 @@ static void image_prepare(NvProg *pr, unsigned stages) {
             os_unfair_lock_unlock(&g_rmu);
         }
     }
+    // Image class changes on packed backing need the same guest-bit interpretation as sampled format views. Materialize these before encode_args opens its encoder.
+    os_unfair_lock_lock(&g_rmu);
+    for (int st = 0; st < 6; st++) if (stages & (1u << st)) {
+        NvShader *sh = pr->sh[st]; if (!sh) continue;
+        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; if (b->kind != NVN_RB_IMG || b->reg >= 32) continue;
+            int tid = (int)(S.img[st][b->reg] & 0xfffff); if (tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok || g_treg[tid].gone || g_treg[tid].t.d.format != NVN_FORMAT_RGBA4) continue;
+            id<MTLTexture> t = tex_by_id(tid); uint64_t rid;
+            if (t && b->dpf != NVN_DPF_FLOAT && mtl_pf_bytes(t.pixelFormat) == 2) img_fit(tid, t, b->dpf, &rid);
+        }
+    }
+    os_unfair_lock_unlock(&g_rmu);
 }
 // Image atomics run natively on the image's own texture (dmsh_atomic.py), so they and every other access of the image see the same texels: a block-linear image's Metal texture as
 // much as a linear one's pool memory. They used to go through a raw pointer beside the texture, which for a block-linear image (a deswizzled copy) could only be a scratch buffer
@@ -9865,7 +10095,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     g_mdxc.next = NULL;
     if (!S.prog) { RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = g_geo_program ? g_geo_program : prog_get(S.prog);
-    image_prepare(pr, 0x1f);
+    if (S.tf_on || S.rast_discard) image_prepare(pr, 0x1f);
     draw_gs_check(pr);   // a geometry stage left with no function (see prog_fold_gs)
     if (!g_geo_program && S.rast_discard && S.tf_on) { tf_draw(pr, dw, di); return; }
     // Feedback captures rasterized draws too (Donkey Kong Country: Tropical Freeze's fur).
@@ -9918,6 +10148,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
         g_fz_fallback++; rp_end(); }
     if (g_enc && g_vis_counting && g_vis_n >= VIS_SLOTS) rp_end();   // this draw's query needs a slot and the buffer is bound for the whole pass: the next pass begins with a new one (rp_begin_ex)
     if (g_enc && g_rp_aw && (!R.has_sc || (long)R.sc.x + R.sc.w > (long)g_rp_aw || (long)R.sc.y + R.sc.h > (long)g_rp_ah)) rp_end();   // leaves the pass's render area
+    packed16_prepare(pr, 0x1f);   // feedback snapshots must see current representation content too
     fb_prepare(pr);   // same-pass feedback sampling: copy the snapshot first (see fb_prepare)
     if (R.has_sc && !g_enc && !S.rast_discard) {
         NSUInteger tw0 = 0, th0 = 0; rt_dims(&tw0, &th0);
@@ -9942,6 +10173,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     if (g_enc && g_sm_pass && draw_samples_rt(pr)) { PD("M %llu a draw in the slice-merged pass samples its attachment; split here", g_stat_pass); rp_end(); }
     if (!g_enc && mode == 0 && !g_rp_layered && !defer_q_draw && g_exec_next && !tbdr_on() && !g_geo_program && sm_on()) sm_plan(pr);
     vbuf_prepare(pr->sh[0] ? &pr->sh[0]->rf : NULL, dw, di);   // an unaligned GPU-written stream, or one the draw reads past, needs its ordered copy before the render encoder
+    image_prepare(pr, 0x1f);   // after helper dispatches/uploads, immediately before opening the guest render encoder
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_rp_layered = 0; g_sm_plan.on = 0;
     g_fd_dw = NULL; g_fd_di = NULL;
@@ -10306,6 +10538,7 @@ static void dispatch(const p_dispatch *dp) {
         enc_c_dispatch_indirect(ce, ig, MTLSizeMake(tg[0], tg[1], tg[2]));
     } else enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
     if (own) enc_c_end(ce);
+    packed16_views_flush();
 }
 // GPU: texture -> buffer (row stride taken from SetCopyRowStride, layer stride from SetCopyImageStride, 0 = tightly packed)
 // A copy at a level the host texture lacks (more levels declared than its size holds, tex_desc) is skipped: Metal does not check the level of a blit
@@ -10314,17 +10547,17 @@ static int tex_level_ok(id<MTLTexture> t, NSUInteger level, const char *what) {
     RED_ONCE(116, "%s at level %lu of a texture with %lu levels: skipped (first case)", what, (unsigned long)level, (unsigned long)t.mipmapLevelCount);
     return 0;
 }
-// The RGB565 family's red / blue exchange (rb_packed_shift) on the GPU, for copies between guest memory and a host texture: the copy runs on the GPU timeline, after GPU writes earlier in the
+// Packed component conversion (packed16_kind) on the GPU, for copies between guest memory and a host texture: the copy runs on the GPU timeline, after GPU writes earlier in the
 // submission, so its bytes can only be converted there. wb bytes of each of rows rows in nz images, from src (row / img apart) to dst (drow / dimg apart); src == dst converts in place.
 // Dispatched in the copy encoder, ordered by its barriers (dispatch_enc)
-static int rb_swap_gpu(uint64_t src, size_t row, size_t img, uint64_t dst, size_t drow, size_t dimg, size_t wb, size_t rows, size_t nz, int shift) {
+static int packed16_gpu(uint64_t src, size_t row, size_t img, uint64_t dst, size_t drow, size_t dimg, size_t wb, size_t rows, size_t nz, int shift) {
     static id<MTLComputePipelineState> ps; static int failed;
     if (failed) return 0;
     if (!ps) {
         NSError *e = nil; id<MTLLibrary> lib = host_lib("rb_swap", &e);
         id<MTLFunction> fn = [lib newFunctionWithName:@"rb_swap"];
         ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
-        if (!ps) { failed = 1; MLOG("[RED] cannot create the red / blue exchange for RGB565-family copies: %s", e.localizedDescription.UTF8String); return 0; }
+        if (!ps) { failed = 1; MLOG("[RED] cannot create the packed 16-bit component conversion for copies: %s", e.localizedDescription.UTF8String); return 0; }
     }
     id<MTLBuffer> pb; size_t po = arena_alloc(48, &pb);
     struct { uint64_t s, d; uint32_t w, h, row, img, drow, dimg, shift; } *p = (void *)((uint8_t *)pb.contents + po);
@@ -10332,12 +10565,30 @@ static int rb_swap_gpu(uint64_t src, size_t row, size_t img, uint64_t dst, size_
     id<MTL4ComputeCommandEncoder> e = dispatch_enc();
     [g_ct setAddress:pb.gpuAddress + po atIndex:0]; enc_c_pso(e, ps);
     enc_c_dispatch(e, MTLSizeMake((wb / 2 + 63) / 64, rows, nz), MTLSizeMake(64, 1, 1));
-    static int once; if (!once++) MLOG("RGB565-family copy between guest memory and a host texture: red and blue exchanged on the GPU (first case %zux%zux%zu texels)", wb / 2, rows, nz);
+    static int once; if (!once++) MLOG("packed 16-bit copy between guest memory and a host texture: components converted on the GPU (first case %zux%zux%zu texels)", wb / 2, rows, nz);
     return 1;
 }
-// Whether a copy into or out of this host texture crosses between the guest's order and Metal's for the RGB565 family: the red bit position (rb_packed_shift), 0 for other formats and for a
+// Whether a copy into or out of this host texture crosses between the guest's order and Metal's: the conversion kind (packed16_kind), 0 for other formats and for a
 // texture on a pool's buffer, which holds the guest's bits (linear and buffer textures)
-static int rb_copy_shift(const tex_t *t, id<MTLTexture> mt) { return mt.buffer ? 0 : rb_packed_shift(t->d.format); }
+static int packed16_copy_kind(const tex_t *t, id<MTLTexture> mt) { return packed16_encoding(t, mt); }
+// Bit-preserving copy between packed representations. A private texture uses its format's Metal encoding; a pool-backed texture keeps guest bits. Going through guest order also
+// handles two different packed encodings (the conversions do not commute). All stages stay on the GPU timeline, including when the source was written earlier in this submission.
+static int packed16_copy(id<MTLTexture> s, unsigned sl, unsigned ss, MTLOrigin so, id<MTLTexture> d, unsigned dl, unsigned ds, MTLOrigin origin, MTLSize size, int sk, int dk) {
+    if (s.sampleCount > 1 || d.sampleCount > 1 || !size.width || !size.height || !size.depth) {
+        RED_ONCE(151, "packed 16-bit representation copy has unsupported samples or an empty region"); return 0;
+    }
+    size_t row = size.width * 2, img = row * size.height; id<MTLBuffer> b; size_t off = arena_alloc(img * size.depth, &b);
+    enc_b_copy_texture_buffer(blit(), s, ss, sl, so, size, b, off, row, img);
+    uint64_t a = b.gpuAddress + off;
+    if (sk != dk) {
+        if ((sk && !packed16_gpu(a, row, img, a, row, img, row, size.height, size.depth, sk))
+            || (dk && !packed16_gpu(a, row, img, a, row, img, row, size.height, size.depth, dk))) {
+            RED_ONCE(152, "packed 16-bit representation copy could not convert kind %d to %d; this destination region was not written", sk, dk); return 0;
+        }
+    }
+    enc_b_copy_buffer_texture(blit(), b, off, row, img, size, d, ds, dl, origin);
+    return 1;
+}
 static void copy_t2b(const p_copy_b2t *c) {
     rp_flush();   // Materialize pending clears before reading, matching copy_t2t.
     g_wr_epoch++; g_mdx_epoch++;
@@ -10359,9 +10610,9 @@ static void copy_t2b(const p_copy_b2t *c) {
     else
         for (int z = 0; z < nz; z++)
             enc_b_copy_texture_buffer(b, t, layer0 + c->r.zoffset + z, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, 0), MTLSizeMake(c->r.width, c->r.height, 1), (__bridge id<MTLBuffer>)mb, mo + z * img, row, img);
-    int shift = rb_copy_shift(c->tex, t);   // into the guest's order, in the buffer
+    int shift = packed16_copy_kind(c->tex, t);   // into the guest's order, in the buffer
     if (shift) { uint64_t a = ((__bridge id<MTLBuffer>)mb).gpuAddress + mo; size_t wb = (size_t)((c->r.width + bw - 1) / bw) * bpb;
-        if (!rb_swap_gpu(a, row, img, a, row, img, wb, rows, nz, shift)) RED_ONCE(6, "RGB565-family texture→buffer copy left in Metal's order: red and blue exchanged"); }
+        if (!packed16_gpu(a, row, img, a, row, img, wb, rows, nz, shift)) RED_ONCE(6, "packed 16-bit texture→buffer copy left in Metal's component order"); }
 }
 // CPU texture read (ReadTexels): for packaged textures the pool memory is the ground truth, de-layout and read directly; the rest are read back from the MTLTexture by blit (the caller has already waited for the GPU per NVN rules)
 void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {
@@ -10410,7 +10661,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
                 sourceSize:MTLSizeMake(r->width, r->height, 1) toBuffer:buf destinationOffset:z * wb * hb destinationBytesPerRow:wb destinationBytesPerImage:wb * hb];
     enc_b_end(b); [cb commit]; [cb waitUntilCompleted];
     for (int z = 0; z < nz; z++) for (size_t y = 0; y < hb; y++) memcpy(dst + z * img + y * row, (uint8_t *)buf.contents + z * wb * hb + y * wb, wb);
-    int shift = rb_copy_shift(t, mt); if (shift) rb_swap_rows(dst, wb, hb, (size_t)nz, row, img, shift);   // into the guest's order
+    int shift = packed16_copy_kind(t, mt); if (shift) packed16_rows(dst, wb, hb, (size_t)nz, row, img, shift);   // into the guest's order
     }
 }
 // Whether a texture's storage is where the host takes its content from, now or once the CPU writes it: tex_mtl_'s packaged textures (a packaged layout, CPU-written, uploaded) and those
@@ -10456,7 +10707,7 @@ static void mirror_note(int rc, const tex_t *t, unsigned level, const char *from
 // A source the GPU wrote has no content in guest memory to mirror on the CPU: the destination region is read back from the host texture after the copy, on the GPU, into a shared buffer, and
 // written into the storage when the submission completes (a post-op, run before the fence is published, so the game cannot have released the pool yet; it runs after any upload of the
 // texture encoded before it, so the pages it dirties are carried by the next one). The texture record is copied: the game may finalize the object once it has waited
-typedef struct { tex_t t; unsigned level, layer0; NVNcopyRegion r; size_t row, img; void *buf, *src; int shift; } mirror_rb;   // buf: the readback buffer, retained for the handler; src: a render pass's host tex; shift: rb_copy_shift
+typedef struct { tex_t t; unsigned level, layer0; NVNcopyRegion r; size_t row, img; void *buf, *src; int shift; } mirror_rb;   // buf: the readback buffer, retained for the handler; src: a render pass's host tex; shift: packed16_copy_kind
 static size_t mtl_pf_block_bytes(MTLPixelFormat pf) {   // bytes per texel, or per block of a compressed format; 0 when not known
     int bb = bc_block_bytes(pf); if (bb) return (size_t)bb;
     if (pf >= MTLPixelFormatASTC_4x4_sRGB && pf <= MTLPixelFormatASTC_12x12_HDR) return 16;
@@ -10471,8 +10722,10 @@ static void mirror_readback(const tex_t *t, id<MTLTexture> d, unsigned level, un
     if (!b) { mirror_note(-1, t, level, from, 1); return; }
     res_add(b);
     id<MTL4ComputeCommandEncoder> e = blit();
-    for (int z = 0; z < nz; z++) enc_b_copy_texture_buffer(e, d, layer0 + r->zoffset + z, level, MTLOriginMake(r->xoffset, r->yoffset, 0), MTLSizeMake(r->width, r->height, 1), b, (size_t)z * img, row, img);
-    mirror_rb *m = malloc(sizeof *m); *m = (mirror_rb){*t, level, layer0, *r, row, img, (void *)CFBridgingRetain(b), absorb ? (void *)CFBridgingRetain(d.parentTexture ? d.parentTexture : d) : NULL, rb_copy_shift(t, d)};
+    if (d.textureType == MTLTextureType3D)
+        enc_b_copy_texture_buffer(e, d, 0, level, MTLOriginMake(r->xoffset, r->yoffset, r->zoffset), MTLSizeMake(r->width, r->height, nz), b, 0, row, img);
+    else for (int z = 0; z < nz; z++) enc_b_copy_texture_buffer(e, d, layer0 + r->zoffset + z, level, MTLOriginMake(r->xoffset, r->yoffset, 0), MTLSizeMake(r->width, r->height, 1), b, (size_t)z * img, row, img);
+    mirror_rb *m = malloc(sizeof *m); *m = (mirror_rb){*t, level, layer0, *r, row, img, (void *)CFBridgingRetain(b), absorb ? (void *)CFBridgingRetain(d.parentTexture ? d.parentTexture : d) : NULL, packed16_copy_kind(t, d)};
     post((post_op){4, NULL, 0, 0, 0, 0, m, 0});
     mrb_note(t->serial, 1);
     if (m->src) pkg_absorb_pending(t->serial, 1);
@@ -10481,7 +10734,7 @@ static void mirror_readback(const tex_t *t, id<MTLTexture> d, unsigned level, un
 }
 static void mirror_rb_land(void *p) {   // the submission's completion handler
     mirror_rb *m = p; id<MTLBuffer> b = CFBridgingRelease(m->buf);
-    if (m->shift) { int bw, bh; nvn_fmt_bpb(m->t.d.format, &bw, &bh); rb_swap_rows(b.contents, m->row, (size_t)((m->r.height + bh - 1) / bh), (size_t)(m->r.depth ? m->r.depth : 1), m->row, m->img, m->shift); }   // into the guest's order
+    if (m->shift) { int bw, bh; nvn_fmt_bpb(m->t.d.format, &bw, &bh); packed16_rows(b.contents, m->row, (size_t)((m->r.height + bh - 1) / bh), (size_t)(m->r.depth ? m->r.depth : 1), m->row, m->img, m->shift); }   // into the guest's order
     if (nvn_tex_mirror_b2t(&m->t, m->level, m->layer0, &m->r, b.contents, m->row, m->img)) { static int n; if (n++ < 4) MLOG("[RED] GPU copy read back into the storage of texture ser=%llu level %u: not written", (unsigned long long)m->t.serial, m->level);
         if (m->src) CFRelease(m->src); }
     else if (m->src) pkg_absorb_note(&m->t, m->src);
@@ -10512,12 +10765,12 @@ static void copy_b2t(const p_copy_b2t *c) {
     if (is3d && passdump()) { const char *dd = getenv("DM_NVN_CBDUMP"); if (dd) {   // the source bytes of a 3D upload, beside the uniform dumps (F<frame>_c3d_<serial>.bin)
         char p[1024]; snprintf(p, sizeof p, "%s/F%llu_c3d_%llu.bin", dd, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)c->tex->serial);
         FILE *f = fopen(p, "wb"); if (f) { fwrite((const uint8_t *)((__bridge id<MTLBuffer>)mb).contents + mo, 1, img * nz, f); fclose(f); } } }
-    // Into Metal's order (rb_copy_shift): converted on the GPU into a staging area of the frame arena, which the blit copies from
-    id<MTLBuffer> sb = (__bridge id<MTLBuffer>)mb; int shift = rb_copy_shift(c->tex, t);
+    // Into Metal's order (packed16_copy_kind): converted on the GPU into a staging area of the frame arena, which the blit copies from
+    id<MTLBuffer> sb = (__bridge id<MTLBuffer>)mb; int shift = packed16_copy_kind(c->tex, t);
     if (shift) {
         size_t wb = (size_t)((c->r.width + bw - 1) / bw) * bpb; id<MTLBuffer> ab; size_t ao = arena_alloc(wb * rows * nz, &ab);
-        if (rb_swap_gpu(sb.gpuAddress + mo, row, img, ab.gpuAddress + ao, wb, wb * rows, wb, rows, nz, shift)) { sb = ab; mo = ao; row = wb; img = wb * rows; }
-        else RED_ONCE(7, "RGB565-family buffer→texture copy left in the guest's order: red and blue exchanged");
+        if (packed16_gpu(sb.gpuAddress + mo, row, img, ab.gpuAddress + ao, wb, wb * rows, wb, rows, nz, shift)) { sb = ab; mo = ao; row = wb; img = wb * rows; }
+        else RED_ONCE(7, "packed 16-bit buffer→texture copy left in the guest's component order");
     }
     id<MTL4ComputeCommandEncoder> b = blit();
     if (is3d)
@@ -10544,7 +10797,7 @@ static int fmt_int_or_ds(MTLPixelFormat f) {
         default: return 0;
     }
 }
-static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear, int mirror) {
+static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear, int mirror, int sf, int df) {
     static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pso; static id<MTLFunction> vf, ff, fd, fds; static id<MTLSamplerState> samp[2]; static id<MTL4ArgumentTable> at; static id<MTLDepthStencilState> dss, dss_s; static int failed;
     if (failed || sr->width <= 0 || sr->height <= 0 || dr->width <= 0 || dr->height <= 0) return 0;
     int depth = (s.pixelFormat == MTLPixelFormatDepth32Float || s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) && d.pixelFormat == s.pixelFormat, stencil = depth && d.pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
@@ -10579,8 +10832,27 @@ static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
     int nz = sr->depth ? sr->depth : 1;
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     for (int z = 0; z < nz; z++) {
-        id<MTLTexture> sv = [s newTextureViewWithPixelFormat:s.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss + sr->zoffset + z, 1)];
-        id<MTLBuffer> pb; size_t po = arena_alloc(32, &pb);   // parameters in the frame arena (resident already): a fresh 32-byte buffer per copy was a residency add, a commit and a release (Link's Awakening, about 11 a frame)
+        id<MTLTexture> sv = [s newTextureViewWithPixelFormat:s.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss + sr->zoffset + z, 1)], target = d, packed_target = nil;
+        int p16 = sf == NVN_FORMAT_RGBA4 || df == NVN_FORMAT_RGBA4;
+        int sk = p16 && packed16_root(s).buffer ? packed16_kind(sf) : 0, dk = p16 && packed16_root(d).buffer ? packed16_kind(df) : 0;
+        // The draw samples / writes native Metal components. Linear packed textures keep guest bits, so normalize the selected level/slice and copy the destination back afterwards.
+        if (sk) {
+            MTLTextureDescriptor *sd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:s.pixelFormat width:sw height:sh mipmapped:NO]; sd.storageMode = MTLStorageModePrivate; sd.usage = MTLTextureUsageShaderRead;
+            id<MTLTexture> normalized = [g_dev newTextureWithDescriptor:sd];
+            if (!normalized) { RED_ONCE(153, "cannot allocate the native packed source of a scaled texture copy"); return 0; }
+            res_add(normalized); defer_obj_release(normalized);
+            if (!packed16_copy(s, sl, ss + sr->zoffset + z, MTLOriginMake(0, 0, 0), normalized, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(sw, sh, 1), 0, sk)) return 0;
+            sv = normalized;
+        }
+        if (dk) {
+            MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:d.pixelFormat width:dw height:dh mipmapped:NO]; dd.storageMode = MTLStorageModePrivate; dd.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+            packed_target = [g_dev newTextureWithDescriptor:dd];
+            if (!packed_target) { RED_ONCE(154, "cannot allocate the native packed destination of a scaled texture copy"); return 0; }
+            res_add(packed_target); defer_obj_release(packed_target);
+            if (!packed16_copy(d, dl, ds + dr->zoffset + z, MTLOriginMake(0, 0, 0), packed_target, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(dw, dh, 1), 0, dk)) return 0;
+            target = packed_target;
+        }
+        id<MTLBuffer> pb; size_t po = arena_alloc(32, &pb);   // parameters in the frame arena (resident already)
         if (!sv || !pb) { RED_ONCE(84, "format-converting / scaling texture copy: cannot create the source view / argument block"); return z > 0; }
         float *p = (float *)((uint8_t *)pb.contents + po); p[0] = sr->xoffset; p[1] = sr->yoffset; p[2] = (float)sr->width / dr->width; p[3] = (float)sr->height / dr->height;
         if (mirror & NVN_COPY_FLAGS_MIRROR_X_BIT) { p[0] += sr->width; p[2] = -p[2]; }   // mirrored: walk the source region from its far edge
@@ -10589,9 +10861,10 @@ static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
         MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
         MTLRenderPassAttachmentDescriptor *a = depth ? (MTLRenderPassAttachmentDescriptor *)rp.depthAttachment : (MTLRenderPassAttachmentDescriptor *)rp.colorAttachments[0];
         int whole = !dr->xoffset && !dr->yoffset && (unsigned)dr->width == dw && (unsigned)dr->height == dh;   // the copy draws every pixel of the level (no blending, no discard): its old content is not loaded (Link's Awakening copies its scene this way every frame)
-        a.texture = d; a.level = dl; a.slice = ds + dr->zoffset + z; a.loadAction = whole ? MTLLoadActionDontCare : MTLLoadActionLoad; a.storeAction = MTLStoreActionStore;
+        a.texture = target; a.level = dk ? 0 : dl; a.slice = dk ? 0 : ds + dr->zoffset + z; a.loadAction = whole ? MTLLoadActionDontCare : MTLLoadActionLoad; a.storeAction = MTLStoreActionStore;
         id<MTLTexture> stv = scopy ? (z ? [s newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8 textureType:MTLTextureType2D levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss + sr->zoffset + z, 1)] : stv0) : nil;
         if (stencil) { MTLRenderPassStencilAttachmentDescriptor *st = rp.stencilAttachment; st.texture = d; st.level = dl; st.slice = a.slice; st.loadAction = scopy ? (whole ? MTLLoadActionDontCare : MTLLoadActionLoad) : MTLLoadActionClear; st.clearStencil = 0; st.storeAction = MTLStoreActionStore; }
+        if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
         ser_gate(); id<MTL4RenderCommandEncoder> en = enc_r_begin(rp);
         if (depth) [en setDepthStencilState:scopy ? dss_s : dss];
         [en setArgumentTable:at atStages:MTLRenderStageFragment];
@@ -10599,7 +10872,8 @@ static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
         [en setViewport:(MTLViewport){dr->xoffset, dr->yoffset, dr->width, dr->height, 0, 1}];
         [en setScissorRect:(MTLScissorRect){(NSUInteger)dr->xoffset, (NSUInteger)dr->yoffset, (NSUInteger)dr->width, (NSUInteger)dr->height}];
         [en setRenderPipelineState:ps]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; enc_r_end(en);
-        defer_obj_unref(sv); if (stv) defer_obj_unref(stv);   // released after this submission has run
+        if (dk && !packed16_copy(packed_target, 0, 0, MTLOriginMake(0, 0, 0), d, dl, ds + dr->zoffset + z, MTLOriginMake(0, 0, 0), MTLSizeMake(dw, dh, 1), dk, 0)) return 0;
+        if (!sk) defer_obj_unref(sv); if (stv) defer_obj_unref(stv);   // released after this submission has run
     }
     args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
     { static int once[2]; if (!once[depth]++) MLOG("format-converting / scaling texture copy: first case %dx%d format %lu → %dx%d format %lu%s%s", sr->width, sr->height, (unsigned long)s.pixelFormat, dr->width, dr->height, (unsigned long)d.pixelFormat,
@@ -10614,6 +10888,7 @@ static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
 static void draw_tex(const p_draw_tex *c) {
     static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pso; static id<MTLFunction> vf, ff; static id<MTL4ArgumentTable> at; static int failed;
     if (failed || g_rc_skip || !R.has_rt) return;
+    rp_flush(); packed16_prepare(NULL, 0);
     float dw = c->d.x1 - c->d.x0, dh = c->d.y1 - c->d.y0;
     if (dw == 0 || dh == 0) return;
     if (!pso) {
@@ -10634,6 +10909,10 @@ static void draw_tex(const p_draw_tex *c) {
         const tex_t *rt = R.rt.color[k]; if (!rt) continue;
         uint32_t wm = (S.chmask.mask >> (4 * k)) & 0xf; if (!wm) continue;
         id<MTLTexture> d = tex_mtl(rt); uint64_t ser; int lv, sl; rt_sub(&R.rt, k, &ser, &lv, &sl);
+        int format = R.rt.has_cview[k] && R.rt.cview[k].set_format ? R.rt.cview[k].format : rt->d.format;
+        if (rt->d.format == NVN_FORMAT_RGBA4 || format == NVN_FORMAT_RGBA4) { uint32_t pf = 0; uint8_t swz[4];
+            if (nvn_fmt_to_mtl(format, &pf, swz) && pf) d = packed16_view(rt, d, (MTLPixelFormat)pf, packed16_kind(format), 1);
+        }
         if (!d || fmt_int_or_ds(d.pixelFormat) || mtl_fmt_block(d.pixelFormat) || !(d.usage & MTLTextureUsageRenderTarget)) { RED_ONCE(125, "DrawTexture: target %d (format %lu) not drawn", k, d ? (unsigned long)d.pixelFormat : 0ul); continue; }
         NSNumber *pk = @(d.pixelFormat * 16 + wm);
         id<MTLRenderPipelineState> ps = pso[pk];
@@ -10669,12 +10948,26 @@ static void draw_tex(const p_draw_tex *c) {
         { static int once; if (!once++) MLOG("DrawTexture: first case %gx%g texels of a %lux%lu texture (format %lu) → %gx%g pixels of target %d (%lux%lu, format %lu)", c->s.x1 - c->s.x0, c->s.y1 - c->s.y0,
                                             (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat, dw, dh, k, (unsigned long)tw, (unsigned long)th, (unsigned long)d.pixelFormat); }
     }
+    packed16_views_flush();
     args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
 }
-// GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
-static void copy_t2t(const p_copy_t2t *c) {
+// A packed-format view reinterprets guest bits before the copy applies its own (possibly numeric) conversion. Ordinary format-view copies retain their existing path.
+static id<MTLTexture> packed16_copy_view(const tex_t *t, const view_t *v, int has_v, id<MTLTexture> base, int write) {
+    if (!base || !has_v || !v->set_format || (t->d.format != NVN_FORMAT_RGBA4 && v->format != NVN_FORMAT_RGBA4)) return base;
+    uint32_t pf; uint8_t sw[4]; int bw, bh;
+    if (!nvn_fmt_to_mtl(v->format, &pf, sw) || !pf || nvn_fmt_bpb(v->format, &bw, &bh) != 2 || bw != 1 || bh != 1) return base;
+    id<MTLTexture> resolved = packed16_view(t, base, (MTLPixelFormat)pf, packed16_kind(v->format), write);
+    if (!resolved || resolved.pixelFormat == (MTLPixelFormat)pf) return resolved;
+    if (resolved == base && !(base.usage & MTLTextureUsagePixelFormatView)) resolved = tex_upgrade_pfv(t, base, (MTLPixelFormat)pf);
+    id<MTLTexture> view = [resolved newTextureViewWithPixelFormat:(MTLPixelFormat)pf];
+    if (!view) { RED_ONCE(155, "cannot create packed texture copy format view %#x", v->format); return nil; }
+    defer_obj_unref(view); return view;
+}
+// GPU: texture -> texture. Equal native formats with equal packed encodings use a raw blit; scaling, mirroring and numeric format changes draw through native-order textures.
+static void copy_t2t_(const p_copy_t2t *c) {
     if (c->src) xv_check(c->src->serial, c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, "texture copy source");
     rp_flush();   // Land the pending pure-clear render pass first (zero-source candidates only enter the set when the render pass ends); the blit() below would end the render pass anyway
+    int sf = c->has_sv && c->sv.set_format ? c->sv.format : c->src ? c->src->d.format : 0, df = c->has_dv && c->dv.set_format ? c->dv.format : c->dst ? c->dst->d.format : 0;
     if (c->dst) zskip_del(c->dst->serial);
     if (c->src && c->dst && c->sr.xoffset == 0 && c->sr.yoffset == 0 && c->dr.xoffset == 0 && c->dr.yoffset == 0
         && c->sr.width == (int)c->src->d.width && c->sr.height == (int)c->src->d.height && c->dr.width == (int)c->dst->d.width && c->dr.height == (int)c->dst->d.height) {
@@ -10684,6 +10977,9 @@ static void copy_t2t(const p_copy_t2t *c) {
     }
     id<MTLTexture> s = tex_mtl(c->src), d = tex_mtl(c->dst);
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
+    if (!s || !d) return;
+    s = packed16_copy_view(c->src, &c->sv, c->has_sv, s, 0);
+    d = packed16_copy_view(c->dst, &c->dv, c->has_dv, d, 1);
     if (!s || !d) return;
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
@@ -10698,7 +10994,7 @@ static void copy_t2t(const p_copy_t2t *c) {
         if (s.sampleCount == 1 && d.sampleCount == 1 && c->src->d.target != 2 && c->dst->d.target != 2) {
             if (!(d.usage & MTLTextureUsageRenderTarget) && !mtl_fmt_block(d.pixelFormat) && !fmt_int_or_ds(d.pixelFormat)) d = tex_upgrade(c->dst, d, MTLTextureUsageRenderTarget, d.pixelFormat);
             NVNcopyRegion sr = {0, 0, 0, (int)MAX(s.width >> sl, 1u), (int)MAX(s.height >> sl, 1u), 1}, dr = {0, 0, 0, (int)MAX(d.width >> dl, 1u), (int)MAX(d.height >> dl, 1u), 1};
-            if (copy_t2t_draw(s, d, sl, sz0, dl, dz0, &sr, &dr, !fmt_int_or_ds(s.pixelFormat), 0)) return;
+            if (copy_t2t_draw(s, d, sl, sz0, dl, dz0, &sr, &dr, !fmt_int_or_ds(s.pixelFormat), 0, sf, df)) return;
         }
         if (s.sampleCount <= 1 || d.sampleCount != 1 || s.pixelFormat != d.pixelFormat || s.width != d.width || s.height != d.height) {
             RED_ONCE(72, "Downsample case not implemented: %lux%lu %lu samples format %lu → %lux%lu %lu samples format %lu", (unsigned long)s.width, (unsigned long)s.height, (unsigned long)s.sampleCount,
@@ -10719,6 +11015,7 @@ static void copy_t2t(const p_copy_t2t *c) {
     PD("t src=%llu lv%u sl%u xyz=%d,%d,%d dst=%llu lv%u sl%u xyz=%d,%d,%d size=%d,%d,%d", c->src->serial, sl, sz0, c->sr.xoffset, c->sr.yoffset, c->sr.zoffset,
        c->dst->serial, dl, dz0, c->dr.xoffset, c->dr.yoffset, c->dr.zoffset, c->sr.width, c->sr.height, c->sr.depth);
     int s3 = c->src->d.target == 2, d3 = c->dst->d.target == 2, nz = c->sr.depth ? c->sr.depth : 1;
+    int draw_copy = c->sr.width != c->dr.width || c->sr.height != c->dr.height || s.pixelFormat != d.pixelFormat || (c->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT));
     // The copy's bytes belong in the destination's storage: written there now from the source's storage when that holds its content and the copy is a plain one (the same Metal format: a
     // format change is drawn below and converts the bytes), else read back after the copy (decided before the draw path gives the destination render-target use, which makes it GPU-owned from then on)
     int rb = !d3 && tex_storage_dst(c->dst);
@@ -10726,14 +11023,15 @@ static void copy_t2t(const p_copy_t2t *c) {
         && !mrb_pending(c->dst->serial) && tex_storage_src(c->src) && !nvn_tex_mirror_t2t(c->src, sl, sz0, &c->sr, c->dst, dl, dz0, &c->dr)) { mirror_note(0, c->dst, dl, "texture", 0); rb = 0; }
     // The draw path renders into the destination: one made without render-target use (packaged) gets it first, as a whole-level clear does (Paper Mario: The Thousand-Year Door copies a
     // 128x128 RGBA8 render target into an RG8 texture, mirrored in Y)
-    if ((c->sr.width != c->dr.width || c->sr.height != c->dr.height || s.pixelFormat != d.pixelFormat || (c->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT))) && !s3 && !d3
+    if (draw_copy && !s3 && !d3
         && !(d.usage & MTLTextureUsageRenderTarget) && !mtl_fmt_block(d.pixelFormat) && d.sampleCount == 1 && !fmt_int_or_ds(s.pixelFormat) && !fmt_int_or_ds(d.pixelFormat))
         d = tex_upgrade(c->dst, d, MTLTextureUsageRenderTarget, d.pixelFormat);
-    if ((c->sr.width != c->dr.width || c->sr.height != c->dr.height || s.pixelFormat != d.pixelFormat || (c->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT))) && !s3 && !d3
+    if (draw_copy && !s3 && !d3
         && (c->sr.depth ? c->sr.depth : 1) == (c->dr.depth ? c->dr.depth : 1)
         && !(c->flags & ~(NVN_COPY_FLAGS_ENGINE_2D_BIT | NVN_COPY_FLAGS_LINEAR_FILTER_BIT | NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT))
-        && copy_t2t_draw(s, d, sl, sz0, dl, dz0, &c->sr, &c->dr, !!(c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT), c->flags)) {   // format change / scaling / mirroring: draw it (see copy_t2t_draw)
-        if (rb) mirror_readback(c->dst, d, dl, dz0, &c->dr, "texture", 0);
+        && copy_t2t_draw(s, d, sl, sz0, dl, dz0, &c->sr, &c->dr, !!(c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT), c->flags, sf, df)) {   // format change / scaling / mirroring: draw it (see copy_t2t_draw)
+        packed16_views_flush();
+        if (rb) mirror_readback(c->dst, tex_mtl(c->dst), dl, dz0, &c->dr, "texture", 0);
         return;
     }
     // The depth plane of a depth-stencil texture into a depth-only one, or back (EA SPORTS FC 27's Frostbite copies its 1920x1080 Depth32Float_Stencil8 target into a Depth32Float
@@ -10753,7 +11051,8 @@ static void copy_t2t(const p_copy_t2t *c) {
         enc_b_copy_texture_buffer_opt(blit(), s, sz0, sl, MTLOriginMake(c->sr.xoffset, c->sr.yoffset, 0), MTLSizeMake(c->sr.width, c->sr.height, 1), plane, 0, row, img, so);
         enc_b_copy_buffer_texture_opt(blit(), plane, 0, row, img, MTLSizeMake(c->sr.width, c->sr.height, 1), d, dz0, dl, MTLOriginMake(c->dr.xoffset, c->dr.yoffset, 0), dop);
         static int once; if (!once++) MLOG("depth plane copy: %dx%d Metal format %lu → %lu through a staging buffer", c->sr.width, c->sr.height, (unsigned long)s.pixelFormat, (unsigned long)d.pixelFormat);
-        if (rb) mirror_readback(c->dst, d, dl, dz0, &c->dr, "texture", 0);
+        packed16_views_flush();
+        if (rb) mirror_readback(c->dst, tex_mtl(c->dst), dl, dz0, &c->dr, "texture", 0);
         return;
     }
     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
@@ -10762,13 +11061,27 @@ static void copy_t2t(const p_copy_t2t *c) {
                  c->flags, (unsigned long)s.pixelFormat, (unsigned long)d.pixelFormat, s3, d3);
         return;
     }
+    // Equal Metal formats may still have different packed bits: private textures use Metal order, while linear textures read guest storage in place.
+    int sk = packed16_copy_kind(c->src, s), dk = packed16_copy_kind(c->dst, d);
+    if ((c->src->d.format == NVN_FORMAT_RGBA4 || c->dst->d.format == NVN_FORMAT_RGBA4 || sf == NVN_FORMAT_RGBA4 || df == NVN_FORMAT_RGBA4) && sk != dk) {
+        int ok = 1;
+        if (s3) ok = packed16_copy(s, sl, 0, MTLOriginMake(c->sr.xoffset, c->sr.yoffset, c->sr.zoffset), d, dl, 0,
+                             MTLOriginMake(c->dr.xoffset, c->dr.yoffset, c->dr.zoffset), MTLSizeMake(c->sr.width, c->sr.height, nz), sk, dk);
+        else for (int z = 0; z < nz && ok; z++) ok = packed16_copy(s, sl, sz0 + c->sr.zoffset + z, MTLOriginMake(c->sr.xoffset, c->sr.yoffset, 0), d, dl, dz0 + c->dr.zoffset + z,
+                                                       MTLOriginMake(c->dr.xoffset, c->dr.yoffset, 0), MTLSizeMake(c->sr.width, c->sr.height, 1), sk, dk);
+        if (!ok) return;   // packed16_copy reports the failed conversion; do not mirror bytes that were not copied
+        packed16_views_flush();
+        if (rb) mirror_readback(c->dst, tex_mtl(c->dst), dl, dz0, &c->dr, "texture", 0);
+        return;
+    }
     id<MTL4ComputeCommandEncoder> b = blit();
     if (s3)
         enc_b_copy_texture(b, s, 0, sl, MTLOriginMake(c->sr.xoffset, c->sr.yoffset, c->sr.zoffset), MTLSizeMake(c->sr.width, c->sr.height, nz), d, 0, dl, MTLOriginMake(c->dr.xoffset, c->dr.yoffset, c->dr.zoffset));
     else
         for (int z = 0; z < nz; z++)
             enc_b_copy_texture(b, s, sz0 + c->sr.zoffset + z, sl, MTLOriginMake(c->sr.xoffset, c->sr.yoffset, 0), MTLSizeMake(c->sr.width, c->sr.height, 1), d, dz0 + c->dr.zoffset + z, dl, MTLOriginMake(c->dr.xoffset, c->dr.yoffset, 0));
-    if (rb) mirror_readback(c->dst, d, dl, dz0, &c->dr, "texture", 0);
+    packed16_views_flush();
+    if (rb) mirror_readback(c->dst, tex_mtl(c->dst), dl, dz0, &c->dr, "texture", 0);
     // Diagnostic DM_NVN_T2T_TRACE=WxH:file: after each copy into an RGBA16F texture of that size, copy the result once more into a trace buffer on the GPU timeline (frame numbers kept on the CPU side); after 240 copies write the file
     { static int on = -1; static uint32_t tw, th; static const char *tf; static id<MTLBuffer> tb; static int tn; static uint64_t tfr[240], from;
       if (on < 0) { const char *e = getenv("DM_NVN_T2T_TRACE"), *fe = getenv("DM_NVN_T2T_FROM"); on = e && sscanf(e, "%ux%u", &tw, &th) == 2 && (tf = strchr(e, ':')) && *++tf; from = fe ? strtoull(fe, NULL, 10) : 0; }
@@ -10828,7 +11141,7 @@ static void dlss_eval(const p_dlss *c) {
     if (!e) {
         NVNcopyRegion sr = {c->base[DLSS_COLOR][0], c->base[DLSS_COLOR][1], 0, (int)iw, (int)ih, 1}, dr = {c->base[DLSS_OUTPUT][0], c->base[DLSS_OUTPUT][1], 0, (int)out.width, (int)out.height, 1};
         if (!(out.usage & MTLTextureUsageRenderTarget) && !mtl_fmt_block(out.pixelFormat) && !fmt_int_or_ds(out.pixelFormat)) out = tex_upgrade(c->tex[DLSS_OUTPUT], out, MTLTextureUsageRenderTarget, out.pixelFormat);
-        if (!copy_t2t_draw(col, out, 0, 0, 0, 0, &sr, &dr, 1, 0)) { static int once; if (!once++) MLOG("[RED] DLSS: the bilinear stand-in could not draw format %lu into format %lu", (unsigned long)col.pixelFormat, (unsigned long)out.pixelFormat); }
+        if (!copy_t2t_draw(col, out, 0, 0, 0, 0, &sr, &dr, 1, 0, c->tex[DLSS_COLOR]->d.format, c->tex[DLSS_OUTPUT]->d.format)) { static int once; if (!once++) MLOG("[RED] DLSS: the bilinear stand-in could not draw format %lu into format %lu", (unsigned long)col.pixelFormat, (unsigned long)out.pixelFormat); }
         return;
     }
     id<MTL4FXTemporalScaler> sc = e->sc;
@@ -10862,6 +11175,8 @@ static void dlss_eval(const p_dlss *c) {
     if (c->tex[DLSS_BIAS]) { static int once; if (!once++) MLOG("[RED] DLSS: the game's bias mask (a reactive mask for MetalFX) is not passed on"); }
 }
 
+static void copy_t2t(const p_copy_t2t *c) { copy_t2t_(c); packed16_views_flush(); }
+
 // The colour channels a Metal format has, as a channel write mask: a clear whose mask covers them all writes every texel whole (FINAL FANTASY TACTICS - The Ivalice Chronicles clears an
 // R8 render target with mask 0x1)
 static unsigned mtl_pf_chmask(MTLPixelFormat pf) {
@@ -10877,8 +11192,9 @@ static unsigned mtl_pf_chmask(MTLPixelFormat pf) {
 // Whole level and whole face, all four channels written -> open one clear-only render pass per layer / depth slice (the hardware converts the clear value by the texture format, including integer and depth);
 // View with changed format: clear on that view. Partial colour regions / channel masks use a triangle and preserve everything else.
 static void clear_tex_tri(id<MTLTexture> t, unsigned lv, unsigned l0, const p_clear_tex *c);
-static void clear_tex(const p_clear_tex *c) {
-    if (c->tex) zskip_del(c->tex->serial);
+static void clear_tex_(const p_clear_tex *c) {
+    if (!c->tex) return;
+    zskip_del(c->tex->serial);
     id<MTLTexture> t = tex_mtl(c->tex);
     PD("X ser=%llu view format %#x region %d,%d,%d %dx%dx%d mask %#x %s %g,%g,%g,%g", c->tex ? c->tex->serial : 0ull, c->has_view && c->view.set_format ? c->view.format : -1, c->r.xoffset, c->r.yoffset, c->r.zoffset, c->r.width, c->r.height, c->r.depth, c->mask,
        c->is_uint ? "ui" : "f", c->is_uint ? (double)c->c.u[0] : c->c.f[0], c->is_uint ? (double)c->c.u[1] : c->c.f[1], c->is_uint ? (double)c->c.u[2] : c->c.f[2], c->is_uint ? (double)c->c.u[3] : c->c.f[3]);
@@ -10888,6 +11204,13 @@ static void clear_tex(const p_clear_tex *c) {
     int is3d = t.textureType == MTLTextureType3D, nz = c->r.depth ? c->r.depth : 1;
     if (!(t.usage & MTLTextureUsageRenderTarget) && !mtl_fmt_block(t.pixelFormat) && t.sampleCount == 1)
         t = tex_upgrade(c->tex, t, MTLTextureUsageRenderTarget, t.pixelFormat);   // a clear of a texture made without render-target use (packaged): give it that use
+    int p16format = c->has_view && c->view.set_format ? c->view.format : c->tex->d.format;
+    if (c->tex->d.format == NVN_FORMAT_RGBA4 || p16format == NVN_FORMAT_RGBA4) {
+        uint32_t pf = 0; uint8_t swz[4];
+        if (!nvn_fmt_to_mtl(p16format, &pf, swz) || !pf) return;
+        t = packed16_view(c->tex, t, (MTLPixelFormat)pf, packed16_kind(p16format), 1);
+        if (!t) return;
+    }
     if (c->has_view && c->view.set_format) {   // View with changed format: the clear value is interpreted in the view format (all 5 of the game's calls are the ui version with an integer view), and the clear is done on a view of the same format
         uint32_t vpf = 0; uint8_t swz[4];
         if (!nvn_fmt_to_mtl(c->view.format, &vpf, swz) || !vpf) { RED_ONCE(42, "texture clear view format %#x has no equivalent", c->view.format); return; }
@@ -10919,6 +11242,15 @@ static void clear_tex(const p_clear_tex *c) {
         else if (stencil) rp.stencilAttachment.clearStencil = c->c.u[0];
         else rp.colorAttachments[0].clearColor = c->is_uint ? MTLClearColorMake(c->c.u[0], c->c.u[1], c->c.u[2], c->c.u[3]) : MTLClearColorMake(c->c.f[0], c->c.f[1], c->c.f[2], c->c.f[3]);
         ser_gate(); enc_r_end(enc_r_begin(rp));
+    }
+}
+
+static void clear_tex(const p_clear_tex *c) {
+    int mirror = c->tex && (c->tex->d.format == NVN_FORMAT_RGBA4 || (c->has_view && c->view.set_format && c->view.format == NVN_FORMAT_RGBA4)) && packed16_storage_dst(c->tex);
+    clear_tex_(c); packed16_views_flush();
+    if (mirror) {
+        unsigned lv = c->has_view && c->view.set_levels ? c->view.base_level : 0, sl = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
+        id<MTLTexture> base = tex_mtl(c->tex); if (base) mirror_readback(c->tex, base, lv, sl, &c->r, "clear", 1);
     }
 }
 
