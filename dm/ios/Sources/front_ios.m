@@ -12,6 +12,7 @@
 #include "haptics_apple.h"
 #include "save_sync.h"
 #import "CloudSaves.h"
+#include "LocalSaveFolder.h"
 
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
@@ -95,6 +96,12 @@ static void launcher_done(void) { [g_root startGame]; }
 // The game view, the pad and the frame-rate counter are made once the launcher has set the switches they read (DM_SHOW_FPS, DM_METAL_HUD); the host's loading began at app launch (main.m)
 - (void)startGame {
     if (self.game) return;
+    char save_error[1024];
+    if (!dm_local_save_apply(save_error, sizeof save_error)) {
+        LOG("[RED] could not open the game save location: %s", save_error);
+        [self showHint:[NSString stringWithFormat:@"Unable to open the save location.\n%s\nChoose a folder or Use Default in the launcher.", save_error]];
+        return;
+    }
     dm_cloud_saves_env();   // DM_SAVE_SYNC from the launcher's Cloud saves pick, before the game's first save mount reads it (CloudSaves.m, save_sync.h)
     front_hud_env();   // before the process's first Metal device, which reads MTL_HUD_ENABLED (an env file's DM_METAL_HUD sets it in main.m already; GitHub issue #840)
     const char *dev = front_ios_device_check();   // that first device: a GPU without BC textures is refused here, not at launch, so the launcher's HUD switch counts

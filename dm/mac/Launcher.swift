@@ -14,6 +14,7 @@ struct LauncherView: View {
     @ObservedObject var m: LauncherModel
     let done: (Bool) -> Void
     let fit: (CGFloat) -> Void
+    @State private var preparingSaves = false
     @AppStorage("window.show") private var show = true
     @AppStorage("window.advanced") private var advanced = false
 
@@ -31,6 +32,7 @@ struct LauncherView: View {
             Form {
                 PlayerSection(m: m)
                 settingSections(basic: true)
+                LocalSaveFolderSection(working: $preparingSaves)
                 CloudSavesSection(personalSaveIsLocal: m.personalSaveIsLocal)
                 Section {
                     DisclosureGroup("Advanced settings", isExpanded: $advanced) {}
@@ -55,7 +57,7 @@ struct LauncherView: View {
                 Toggle("Show this window at launch", isOn: $show).toggleStyle(.checkbox)
                 Spacer()
                 Button("Quit") { done(false) }
-                Button("Play") { done(true) }.keyboardShortcut(.defaultAction)
+                LocalSavePlayButton(working: $preparingSaves, ready: { done(true) }) { Text("Play") }.keyboardShortcut(.defaultAction)
             }
             .padding(20)
         }
@@ -99,7 +101,7 @@ struct CloudSavesSection: View {
             }
         } footer: {
             if personalSaveIsLocal {
-                Text("This player’s personal save stays on this Mac. The cloud folder syncs the original player’s save and shared game data.")
+                Text("This player’s personal save uses the local save location. Cloud saves syncs the original player’s save and shared game data.")
             } else {
                 Text("Choose the iCloud Drive folder the iPhone app uses for this game. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in the save's -backups folder.")
             }
@@ -188,7 +190,7 @@ enum LauncherWindowLayout {
 @_cdecl("dm_mac_launcher")
 public func dmMacLauncher() -> Int32 {
     let settings = SettingsFile.bundledSettings()
-    guard !settings.isEmpty || dm_users_count() > 1 || dm_users_can_edit() != 0 else { return 2 }
+    guard !settings.isEmpty || dm_users_count() > 1 || dm_users_can_edit() != 0 || LocalSaveFolder.fixed == nil else { return 2 }
     if (UserDefaults.standard.object(forKey: "window.show") as? Bool) == false && !NSEvent.modifierFlags.contains(.option) {
         fputs("launcher: settings window off (hold Option at launch to show it)\n", stderr)
         return 2

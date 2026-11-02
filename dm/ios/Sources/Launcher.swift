@@ -48,7 +48,7 @@ private struct CloudSavesSection: View {
         } footer: {
             if !note.isEmpty { Text(note) }
             if personalSaveIsLocal {
-                Text("This player’s personal save stays on this device. The cloud folder syncs the original player’s save and shared game data.")
+                Text("This player’s personal save uses the local save location. Cloud saves syncs the original player’s save and shared game data.")
             } else if note.isEmpty {
                 Text("Choose a folder in iCloud Drive, and the same one in the Mac app's Cloud saves. The save comes in when the game starts and goes out after each save; a save that is replaced is kept in save-backups.")
             }
@@ -100,6 +100,7 @@ private struct LauncherView: View {
     @ObservedObject var m: LauncherModel
     let play: () -> Void
     @State private var memory = os_proc_available_memory()
+    @State private var preparingSaves = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -134,6 +135,7 @@ private struct LauncherView: View {
                     } footer: {
                         Text("Brings back all settings this game was tested with.")
                     }
+                    LocalSaveFolderSection(working: $preparingSaves)
                     CloudSavesSection(personalSaveIsLocal: m.personalSaveIsLocal)
                     Section {
                         HStack {
@@ -158,7 +160,7 @@ private struct LauncherView: View {
     }
 
     @ViewBuilder var playButton: some View {
-        let button = Button(action: play) { Text("Play").font(.title3.weight(.semibold)).frame(maxWidth: 220) }.controlSize(.large)
+        let button = LocalSavePlayButton(working: $preparingSaves, ready: play) { Text("Play").font(.title3.weight(.semibold)).frame(maxWidth: 220) }.controlSize(.large)
         if #available(iOS 26.0, *) { button.buttonStyle(.glassProminent) } else { button.buttonStyle(.borderedProminent) }
     }
 
@@ -174,7 +176,7 @@ private struct LauncherView: View {
 @_cdecl("dm_show_launcher")
 public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @convention(c) () -> Void) -> Bool {
     let settings = SettingsFile.bundledSettings()
-    guard !settings.isEmpty || dm_users_count() > 1 || dm_users_can_edit() != 0 else { return false }
+    guard !settings.isEmpty || dm_users_count() > 1 || dm_users_can_edit() != 0 || LocalSaveFolder.fixed == nil else { return false }
     let model = LauncherModel(settings)
     if ProcessInfo.processInfo.environment["DM_LAUNCHER"] == "0" { fputs("launcher: off (DM_LAUNCHER=0)\n", stderr); model.applySaved(); return false }
     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()

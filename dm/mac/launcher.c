@@ -27,6 +27,7 @@
 #include "romfs_image.h"
 #include "save_sync.h"
 #include "local_users.h"
+#include "../ios/Sources/LocalSaveFolder.h"
 
 extern char **environ;
 int dm_mac_launcher(void);   // 1 = Play, 0 = Quit, 2 = no window, -1 = failed to apply the selection
@@ -236,6 +237,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!window) fprintf(stderr, "launcher: no settings window (DM_LAUNCHER=0 or --no-launcher)\n");
+    dm_local_save_configure(id, save);
     int shown = window ? dm_mac_launcher() : 2;
     if (!shown) return 0;   // Quit: no game
     if (shown < 0) return 1;
@@ -244,8 +246,14 @@ int main(int argc, char **argv) {
     if (dm_users()->configured && !dm_users_selection_locked() && !dm_users_select_index(dm_users_selected_index())) {
         fprintf(stderr, "[RED] launcher: could not pass the selected local user to the host\n"); return 1;
     }
+    char save_error[1024];
+    if (!dm_local_save_apply(save_error, sizeof save_error)) {
+        if (shown == 1) alert("Unable to open save location", save_error);
+        else fprintf(stderr, "[RED] launcher: %s\n", save_error);
+        return 1;
+    }
     cloud_saves_folder();
-    setenv("DM_ROOT", sup, 0); setenv("DM_ROMFS", romfs, 0); setenv("DM_SAVE", save, 0); setenv("DM_TEMP", temp, 0);
+    setenv("DM_ROOT", sup, 0); setenv("DM_ROMFS", romfs, 0); setenv("DM_TEMP", temp, 0);
     snprintf(p, sizeof p, "%s/msl", res); setenv("DM_MSL_DIR", p, 0);
     snprintf(p, sizeof p, "%s/font", dm); setenv("DM_FONT_DIR", p, 0);
     snprintf(p, sizeof p, "%s/shader_map.tsv", dm); if (!stat(p, &st)) setenv("DM_NVN_SHMAP", p, 0);

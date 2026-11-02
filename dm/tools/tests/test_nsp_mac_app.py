@@ -118,8 +118,9 @@ class PackReuse(unittest.TestCase):
             'pso/prebuilt.tsv': b'prebuilt', 'pso/rest_pairs.tsv': b'rest', 'pso/archive.tsv': b'index',
             'env.txt': b'DM_TEST=1', 'split.tsv': b'split', 'icon.jpg': b'jpeg', 'source/launcher.c': b'launcher',
             'host/romfs_image.h': b'validator', 'host/save_sync.c': b'sync', 'host/save_sync.h': b'sync api', 'tools/romfs.py': b'reader',
-            'host/local_users.m': b'roster', 'host/local_users.h': b'roster api',
+            'host/local_users.m': b'roster', 'host/local_users.h': b'roster api', 'host/local_save_root.m': b'library',
             'source/Launcher.swift': b'window', 'ios/Sources/LauncherSettings.swift': b'model', 'ios/Sources/LauncherRow.swift': b'rows',
+            'ios/Sources/LocalSaveFolder.swift': b'local saves', 'ios/Sources/LocalSaveFolder.h': b'local folder api',
         }
         for n in pack_app.TABLES: files['profile/' + n] = n.encode()
         for n, content in files.items(): (t / n).write_bytes(content)
@@ -198,8 +199,8 @@ class PackReuse(unittest.TestCase):
         names = ['dmhost', 'patched/main.patched.bin', 'patched/main.fixups.tsv', 'patched/main.gates.tsv', 'patched/main.cuts.tsv',
                  'patched/main.obs.tsv', 'patched/nro.tsv', 'msl/k.metallib', 'msl/k.json', 'msl/inputs.tsv', 'font/nintendo_ext.ttf',
                  'pso/gpu.mtl4a', 'pso/prebuilt.tsv', 'pso/rest_pairs.tsv', 'pso/archive.tsv', 'env.txt', 'icon.jpg', 'source/launcher.c',
-                 'source/Launcher.swift', 'ios/Sources/LauncherSettings.swift', 'ios/Sources/LauncherRow.swift',   # the settings window's sources
-                 'host/save_sync.c', 'host/save_sync.h', 'host/local_users.m', 'host/local_users.h']
+                 'source/Launcher.swift', 'ios/Sources/LauncherSettings.swift', 'ios/Sources/LauncherRow.swift', 'ios/Sources/LocalSaveFolder.swift', 'ios/Sources/LocalSaveFolder.h',
+                 'host/save_sync.c', 'host/save_sync.h', 'host/local_users.m', 'host/local_users.h', 'host/local_save_root.m']
         names += ['profile/' + n for n in pack_app.TABLES]
         for name in names:
             with self.subTest(name=name):
@@ -259,7 +260,7 @@ class PackReuse(unittest.TestCase):
         self.assertIn(c[c.index('-o') + 1], s)   # launcher.c's object, with its main
         sync = next(c for c in self.commands if Path(c[0]).name == 'clang' and '-o' in c and c[-1].endswith('save_sync.c'))
         self.assertIn(sync[sync.index('-o') + 1], s)   # save_sync.c's object: the launcher sends the save once the host has exited
-        self.assertEqual([Path(x).name for x in s if x.endswith('.swift')], ['Launcher.swift', 'LauncherSettings.swift', 'LauncherRow.swift'])
+        self.assertEqual([Path(x).name for x in s if x.endswith('.swift')], ['Launcher.swift', 'LauncherSettings.swift', 'LauncherRow.swift', 'LocalSaveFolder.swift'])
 
     def test_selected_file_modes_and_file_additions_and_removals_invalidate(self):
         self.pack()
@@ -543,6 +544,41 @@ class App(unittest.TestCase):
         self.assertIn('standin host output', (logs / f'{TID}.prev.log').read_text())
         self.assertEqual(self.host_run()['DM_LANG'], 'fr')   # Info.plist DMLanguage
 
+    def test_local_save_folder_without_window(self):
+        support = self.tmp / 'home/Library/Application Support/nxnative'
+        selected = support / 'save-location.plist'
+        source = support / TID / 'save'
+        source.mkdir(parents=True, exist_ok=True)
+        (source / 'fixture-slot').write_bytes(b'player progress')
+        root = self.tmp / 'selected save folder'
+        (root / TID).mkdir(parents=True)  # a library may have an empty title directory before it imports existing progress
+        selected.write_bytes(plistlib.dumps(str(root)))
+        try:
+            p = self.launch(args=['--no-launcher']); p.communicate(timeout=30)
+            self.assertEqual(p.returncode, 7)
+            self.assertEqual(self.host_run()['DM_SAVE'], str(root / TID / 'save'))
+            self.assertEqual((root / TID / 'save/fixture-slot').read_bytes(), b'player progress')
+            self.assertEqual(self.host_run()['DM_PSO_USER'], str(source.parent / 'pso_user.tsv'))
+            (root / TID / 'save/fixture-slot').write_bytes(b'progress in the library')
+            selected.write_bytes(plistlib.dumps(str(root / 'unavailable')))
+            (self.tmp / 'home/host_run.txt').unlink()
+            p = self.launch(); p.communicate(timeout=30)
+            self.assertNotEqual(p.returncode, 7)
+            self.assertFalse((self.tmp / 'home/host_run.txt').exists())
+            external = self.tmp / 'external library'; external.mkdir()
+            p = self.launch(DM_SAVE_ROOT=str(external)); p.communicate(timeout=30)
+            self.assertEqual(p.returncode, 7)
+            self.assertEqual(self.host_run()['DM_SAVE'], str(external / TID / 'save'))
+            self.assertEqual((external / TID / 'save/fixture-slot').read_bytes(), b'progress in the library')
+            self.assertEqual((source / 'fixture-slot').read_bytes(), b'player progress')
+            exact = self.tmp / 'exact-save'
+            p = self.launch(DM_SAVE=str(exact), DM_SAVE_ROOT=str(root / 'missing')); p.communicate(timeout=30)
+            self.assertEqual(p.returncode, 7)
+            self.assertEqual(self.host_run()['DM_SAVE'], str(exact))
+        finally:
+            selected.unlink(missing_ok=True)
+            (source / 'fixture-slot').unlink(missing_ok=True)
+
     def test_local_users_without_window(self):
         sup = self.tmp / f'home/Library/Application Support/nxnative/{TID}'
         sup.mkdir(parents=True, exist_ok=True)
@@ -630,7 +666,6 @@ class App(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads((support / 'other.json').read_bytes())['users'][1]['nickname'], 'Other roster')
             self.assertEqual(roster.read_bytes(), saved)
-
 
     def test_exit_without_a_synced_mount_keeps_cloud_untouched(self):
         with tempfile.TemporaryDirectory(dir=TEST_ROOT) as t:

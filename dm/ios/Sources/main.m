@@ -14,6 +14,7 @@
 #include "romfs_identity.h"
 #include "player_env.h"
 #include "local_users.h"
+#include "LocalSaveFolder.h"
 #ifndef DM_PLAYER_BUILD
 #define DM_PLAYER_BUILD 0
 #endif
@@ -180,7 +181,7 @@ static int boot_env(void) {
     if (!romfs) { romfs_identity_report(doc); fprintf(stderr, "boot: game files not found (Documents/romfs.img, Documents/romfs or <App>/romfs)\n"); return 0; }
     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
     setenv("DM_ROMFS", romfs.fileSystemRepresentation, 0);
-    setenv("DM_SAVE", [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation, 0);
+    dm_local_save_configure(DM_GAME_ID, [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation);
     setenv("DM_TEMP", [doc stringByAppendingPathComponent:@"temp"].fileSystemRepresentation, 0);
     NSString *dm = [res stringByAppendingPathComponent:@"dm"];
     setenv("DM_NVN_SHMAP", [dm stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);

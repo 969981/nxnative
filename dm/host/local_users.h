@@ -42,6 +42,8 @@ int dm_users_can_edit(void);
 // Launcher only. NULL rename_id creates and selects a new user. Renaming keeps the target ID.
 // Returns NULL on success or a diagnostic. A failed edit leaves the loaded roster untouched.
 const char *dm_users_edit(const char *rename_id, const char *nickname);
+int dm_save_prepare_root(const char *root, const char *title_id, const char *source_save,
+                         char *out, size_t out_size, char *error, size_t error_size);
 int dm_users_begin_session(void);    // freezes selection, returns 0 on error
 int dm_users_write_json(FILE *out);  // discovery without loading game files; 1 on success
 

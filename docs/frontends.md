@@ -91,7 +91,13 @@ The query writes one JSON object to stdout containing `version`, `users` (as abo
 
 For account saves the engine uses the UID the **game passes to the mount**, even if it differs from the launcher selection. The legacy account uses `DM_SAVE`. Every other account uses its sibling `<DM_SAVE>.user-<lowercase ID>`. Device data is shared across users of the title: a title that mounts both kinds keeps its device data in `<DM_SAVE>_device`; a device-save-only title keeps its existing `DM_SAVE` (for example, the Animal Crossing island). The existing cloud archive covers the legacy and shared device trees. Additional users' individual save directories are local and must be backed up separately. A frontend that transfers saves can identify them from the roster and these paths. Run one game process at a time against a title's save root, since its device save and transaction directories are shared.
 
-For embedded launchers, [local_users.h](../dm/host/local_users.h) provides the same account operations. Call `dm_users_edit(NULL, nickname)` to create a user, or pass the stable ID to rename one. Refresh the roster after a successful edit.
+### Selecting a save folder
+
+A built Mac or iOS launcher accepts `DM_SAVE_ROOT` set to an absolute, accessible top-level directory (a launch override or an `env.txt` entry). The effective order is an explicit exact directory in `DM_SAVE`, then `DM_SAVE_ROOT`, then the folder the player picked, then the app’s usual per-game directory. On iOS use the Files picker for paths that need sandbox access. The app remembers its permission for subsequent launches.
+
+Under a chosen root the layout is `<root>/<uppercase title ID>/save` for the original player, `save.user-<ID>` beside it for other players, and `save_device` when the game has a separate device save. The default and exact-directory layouts remain unchanged. A fresh destination copies committed saves (including accounts missing from the current roster), extended attributes and the cloud base hash, if present. It excludes transaction scratch, backups and shader caches. An existing title folder with saves is opened as-is. Switching back to the default reopens those original files. Frontends should keep the roster separate from the save library and present errors if a chosen volume is unavailable.
+
+For an embedded launcher, [local_users.h](../dm/host/local_users.h) exposes the same user enumeration, selection, edit and storage operations used by the bundled apps. Prepare the roster path before reading it. On the launcher thread, call `dm_users_edit(NULL, nickname)` to create or pass the stable ID to rename; a non-NULL return is a displayable error. Refresh the roster after an edit. Call `dm_save_prepare_root` with the chosen folder, title ID and previous save base, and supply its returned path as `DM_SAVE` when starting a raw host. The raw host also supports `--list-users` with an explicit roster path.
 
 ## Saved choices
 

@@ -27,11 +27,14 @@ class LauncherStorageTests(unittest.TestCase):
                     (tmp / 'launcher_mac.json').write_text(json.dumps(settings.build('01007EF00011E000', tmp / 'patched', tmp / 'control.nacp')))
             exe = tmp / 'launcher_storage_check'
             host = REPO / 'dm/host'
-            users_obj = tmp / 'local_users.o'
-            subprocess.run(['xcrun', '-sdk', 'macosx', 'clang', '-fobjc-arc', '-c', str(host / 'local_users.m'), '-o', str(users_obj)], check=True)
+            objects = []
+            for unit in ('local_users', 'local_save_root'):
+                obj = tmp / (unit + '.o')
+                subprocess.run(['xcrun', '-sdk', 'macosx', 'clang', '-fobjc-arc', '-c', str(host / (unit + '.m')), '-o', str(obj)], check=True)
+                objects.append(str(obj))
             compile_result = subprocess.run(['xcrun', '-sdk', 'macosx', 'swiftc', '-swift-version', '5', '-parse-as-library', '-module-cache-path', str(tmp / 'module-cache'),
-                            '-import-objc-header', str(host / 'local_users.h'), str(users_obj), '-o', str(exe),
-                            str(REPO / 'dm/ios/Sources/LauncherSettings.swift'), str(REPO / 'dm/ios/Sources/LauncherRow.swift'), str(REPO / 'dm/mac/Launcher.swift'),
+                            '-import-objc-header', str(host / 'local_users.h'), *objects, '-o', str(exe),
+                            str(REPO / 'dm/ios/Sources/LauncherSettings.swift'), str(REPO / 'dm/ios/Sources/LauncherRow.swift'), str(REPO / 'dm/ios/Sources/LocalSaveFolder.swift'), str(REPO / 'dm/mac/Launcher.swift'),
                             str(Path(__file__).with_name('launcher_layout_check.swift')), str(Path(__file__).with_name('launcher_storage_check.swift'))], capture_output=True, text=True, timeout=300)
             self.assertEqual(compile_result.returncode, 0, compile_result.stdout + compile_result.stderr)
             r = subprocess.run([str(exe), str(tmp / 'launcher.json'), str(tmp / 'launcher_mac.json')], capture_output=True, text=True, timeout=60)
