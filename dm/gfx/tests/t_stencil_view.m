@@ -61,7 +61,7 @@ int main(void) { @autoreleasepool {
         // The depth-stencil copy draw reads the source's stencil through its own X32_Stencil8 view and writes it with the depth
         mtl_sub_begin();
         NVNcopyRegion r = {.width=W, .height=H, .depth=1};
-        CHECK(copy_t2t_draw(base, dst, 0, 0, 0, 0, &r, &r, 0, 0, NVN_FORMAT_DEPTH32F_STENCIL8, NVN_FORMAT_DEPTH32F_STENCIL8), "the depth-stencil copy is drawn");
+        CHECK(copy_t2t_draw(base, dst, 0, 0, 0, 0, &r, &r, 0, 0), "the depth-stencil copy is drawn");
         mtl_sub_commit(); mtl_drain();
         float dz2[W * H]; uint8_t st2[W * H];
         plane_io(dst, 0, 0, dz2); plane_io(dst, 1, 0, st2);

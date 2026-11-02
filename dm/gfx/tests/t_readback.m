@@ -131,7 +131,7 @@ static void sample2(int tid, float out[8]) {
 }
 static void packed_copies(int format, int tid) {
     int b565 = format == NVN_FORMAT_RGB565, a1 = format == NVN_FORMAT_RGB5A1, rgba4 = format == NVN_FORMAT_RGBA4;
-    uint16_t red = rgba4 ? 0x800f : a1 ? 0x801f : 0x001f, blue = rgba4 ? 0x0f00 : b565 ? 0xf800 : 0x7c00, guest[2] = {red, blue};
+    uint16_t red = rgba4 ? 0x800f : a1 ? 0x801f : 0x001f, blue = rgba4 ? 0x0f00 : b565 ? 0xf800 : 0x7c00, guest[2] = {red, blue};   // RGBA4: red with alpha 8/15, so that no word reads the same reversed
     void *mem = NULL; if (posix_memalign(&mem, getpagesize(), 262144)) abort(); memset(mem, 0, 262144);
     pool_t pool = {.magic=MAGIC('P','O','O','L'), .mem=mem, .size=262144}; mtl_pool_add(mem, 262144); nvn_dirty_add_range(mem, 262144);
     NVNtextureBuilder tb; NVNtexture copied, cleared; h_nvnTextureBuilderSetDefaults(&tb); h_nvnTextureBuilderSetWidth(&tb, 2);
@@ -151,7 +151,7 @@ static void packed_copies(int format, int tid) {
     NVNcopyRegion region = {0, 0, 0, 2, 1, 1};
     h_nvnCommandBufferCopyBufferToTexture(&cmd, (NVNbufferAddress)src, &copied, NULL, &region, 0);
     h_nvnCommandBufferCopyTextureToBuffer(&cmd, &copied, NULL, &region, (NVNbufferAddress)out, 0);
-    float rgba[] = {1, 0, 0, rgba4 ? 7/15.f : 1}; h_nvnCommandBufferClearTexture(&cmd, &cleared, NULL, &region, rgba, 15);
+    float rgba[] = {1, 0, 0, rgba4 ? 8/15.f : 1}; h_nvnCommandBufferClearTexture(&cmd, &cleared, NULL, &region, rgba, 15);
     h_nvnCommandBufferCopyTextureToBuffer(&cmd, &cleared, NULL, &region, (NVNbufferAddress)out2, 0);
     NVNcopyRegion second = {1, 0, 0, 1, 1, 1}; h_nvnCommandBufferClearTexture(&cmd, &upclr, NULL, &second, rgba, 15);
     h_nvnCommandBufferCopyTextureToTexture(&cmd, &cleared, NULL, &region, &upcopy, NULL, &region, 0);
@@ -165,17 +165,16 @@ static void packed_copies(int format, int tid) {
     snprintf(n, sizeof n, "%s buffer -> plain texture, sampled red then blue", f); EXPECT(n, 1, s[0] > .99f && s[2] < .01f && s[4] < .01f && s[6] > .99f);
     uint16_t got[2]; memcpy(got, out, 4); snprintf(n, sizeof n, "%s plain texture -> buffer, the guest's bits", f); EXPECT(n, 1, got[0] == red && got[1] == blue);
     memset(got, 0xEE, 4); h_nvnTextureReadTexels(&copied, NULL, &region, (uint8_t *)got); snprintf(n, sizeof n, "%s plain texture ReadTexels, the guest's bits", f); EXPECT(n, 1, got[0] == red && got[1] == blue);
-    uint16_t clear_red = rgba4 ? 0x700f : red;
     uint16_t used = b565 || a1 || rgba4 ? 0xffff : 0x7fff;   // RGB5's top bit is unused (Metal's BGR5A1 stores alpha 1 there)
-    memcpy(got, out2, 4); snprintf(n, sizeof n, "%s cleared to red -> buffer, guest red", f); EXPECT(n, 1, (got[0] & used) == clear_red && (got[1] & used) == clear_red);
-    memset(got, 0xEE, 4); h_nvnTextureReadTexels(&cleared, NULL, &region, (uint8_t *)got); snprintf(n, sizeof n, "%s cleared to red, ReadTexels guest red", f); EXPECT(n, 1, (got[0] & used) == clear_red && (got[1] & used) == clear_red);
+    memcpy(got, out2, 4); snprintf(n, sizeof n, "%s cleared to red -> buffer, guest red", f); EXPECT(n, 1, (got[0] & used) == red && (got[1] & used) == red);
+    memset(got, 0xEE, 4); h_nvnTextureReadTexels(&cleared, NULL, &region, (uint8_t *)got); snprintf(n, sizeof n, "%s cleared to red, ReadTexels guest red", f); EXPECT(n, 1, (got[0] & used) == red && (got[1] & used) == red);
     mtl_reg_tex(tid + 10, TX(&up), NULL); sample2(tid + 10, s);
     snprintf(n, sizeof n, "%s packaged texture, sampled red then blue", f); EXPECT(n, 1, s[0] > .99f && s[2] < .01f && s[4] < .01f && s[6] > .99f);
     mtl_reg_tex(tid + 20, TX(&upclr), NULL); sample2(tid + 20, s);
     snprintf(n, sizeof n, "%s packaged texture, its blue texel cleared to red: red twice", f); EXPECT(n, 1, s[0] > .99f && s[2] < .01f && s[4] > .99f && s[6] < .01f);
     mtl_reg_tex(tid + 30, TX(&upcopy), NULL); sample2(tid + 30, s);
     snprintf(n, sizeof n, "%s cleared plain texture -> packaged texture, sampled red", f); EXPECT(n, 1, s[0] > .99f && s[2] < .01f && s[4] > .99f && s[6] < .01f);
-    memset(got, 0xEE, 4); h_nvnTextureReadTexels(&upcopy, NULL, &region, (uint8_t *)got); snprintf(n, sizeof n, "%s copy into a packaged texture, guest red in its storage", f); EXPECT(n, 1, (got[0] & used) == clear_red && (got[1] & used) == clear_red);
+    memset(got, 0xEE, 4); h_nvnTextureReadTexels(&upcopy, NULL, &region, (uint8_t *)got); snprintf(n, sizeof n, "%s copy into a packaged texture, guest red in its storage", f); EXPECT(n, 1, (got[0] & used) == red && (got[1] & used) == red);
     h_nvnTextureFinalize(&upcopy); h_nvnTextureFinalize(&upclr); h_nvnTextureFinalize(&up);
     h_nvnTextureFinalize(&cleared); h_nvnTextureFinalize(&copied); nvn_dirty_remove_range(mem); mtl_pool_del(mem); free(mem);
 }
@@ -322,221 +321,6 @@ static void stale_pools(void) {
     h_nvnMemoryPoolFinalize(mp2); munmap(phys, len); free(mp); free(mp2); free(sp);
 }
 
-// Private packed textures contain Metal-order bits; a LINEAR texture aliases the guest pool. Equal Metal formats still need conversion when a copy crosses that boundary.
-// Literal words deliberately distinguish every channel and alpha. Readbacks test bits, independently of the production converter and of the sampling path.
-static void packed_cross_storage(int format) {
-    void *mem = NULL; if (posix_memalign(&mem, getpagesize(), 262144)) abort(); memset(mem, 0, 262144);
-    pool_t pool = {.magic=MAGIC('P','O','O','L'), .mem=mem, .size=262144, .flags=0x24}; mtl_pool_add(mem, 262144); nvn_dirty_add_range(mem, 262144);
-    const uint16_t guest[2] = {0x8421, 0x0f00};
-    NVNtextureBuilder tb; NVNtexture native, linear, native2, linear2;
-    h_nvnTextureBuilderSetDefaults(&tb); h_nvnTextureBuilderSetWidth(&tb, 2); h_nvnTextureBuilderSetHeight(&tb, 1); h_nvnTextureBuilderSetFormat(&tb, format);
-    h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 65536); EXPECT("packed cross native init", 1, h_nvnTextureInitialize(&native, &tb));
-    h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 147456); EXPECT("packed cross native control init", 1, h_nvnTextureInitialize(&native2, &tb));
-    h_nvnTextureBuilderSetFlags(&tb, NVN_TEXTURE_FLAGS_LINEAR); h_nvnTextureBuilderSetStride(&tb, 256);
-    h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 98304); EXPECT("packed cross linear init", 1, h_nvnTextureInitialize(&linear, &tb));
-    h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 180224); EXPECT("packed cross linear control init", 1, h_nvnTextureInitialize(&linear2, &tb));
-    memcpy((uint8_t *)mem + 98304, guest, 4);
-    EXPECT("packed cross linear shares guest buffer", 1, tex_mtl(TX(&linear)).buffer != nil);
-    uint8_t *out = (uint8_t *)mem + 131072, *out2 = out + 4096, *seed = out + 8192; memcpy(seed, guest, 4);
-    NVNcommandBuffer cmd; EXPECT("packed cross command init", 1, h_nvnCommandBufferInitialize(&cmd, NULL));
-    h_nvnCommandBufferAddCommandMemory(&cmd, (NVNmemoryPool *)&pool, 0, 65536); h_nvnCommandBufferBeginRecording(&cmd);
-    NVNcopyRegion r = {0, 0, 0, 2, 1, 1};
-    h_nvnCommandBufferCopyTextureToTexture(&cmd, &linear, NULL, &r, &native, NULL, &r, 0);
-    h_nvnCommandBufferCopyTextureToBuffer(&cmd, &native, NULL, &r, (NVNbufferAddress)out, 0);
-    h_nvnCommandBufferCopyBufferToTexture(&cmd, (NVNbufferAddress)seed, &native, NULL, &r, 0);
-    h_nvnCommandBufferCopyTextureToTexture(&cmd, &native, NULL, &r, &native2, NULL, &r, 0);
-    h_nvnCommandBufferCopyTextureToBuffer(&cmd, &native2, NULL, &r, (NVNbufferAddress)out2, 0);
-    h_nvnCommandBufferCopyTextureToTexture(&cmd, &linear, NULL, &r, &linear2, NULL, &r, 0);
-    NVNcommandHandle h = h_nvnCommandBufferEndRecording(&cmd); state_reset(); memset(&R, 0, sizeof R);
-    mtl_sub_begin(); mtl_exec((const uint8_t *)h); EXPECT("packed cross first commit", 1, mtl_wait(mtl_sub_commit(), 5000000000ull));
-    EXPECT("packed linear -> native preserves literal guest bits", 1, !memcmp(out, guest, 4));
-    EXPECT("packed native -> native control preserves literal guest bits", 1, !memcmp(out2, guest, 4));
-    EXPECT("packed linear -> linear control preserves literal guest bits", 1, !memcmp((uint8_t *)mem + 180224, guest, 4));
-    // Seed the private source through buffer upload; this direction must be independent of the first copy's result.
-    memcpy(out, guest, 4); h_nvnCommandBufferBeginRecording(&cmd);
-    h_nvnCommandBufferCopyBufferToTexture(&cmd, (NVNbufferAddress)out, &native, NULL, &r, 0);
-    h_nvnCommandBufferCopyTextureToTexture(&cmd, &native, NULL, &r, &linear, NULL, &r, 0);
-    h = h_nvnCommandBufferEndRecording(&cmd); mtl_sub_begin(); mtl_exec((const uint8_t *)h);
-    EXPECT("packed cross second commit", 1, mtl_wait(mtl_sub_commit(), 5000000000ull));
-    EXPECT("packed native -> linear preserves literal guest bits", 1, !memcmp((uint8_t *)mem + 98304, guest, 4));
-    h_nvnTextureFinalize(&linear2); h_nvnTextureFinalize(&native2); h_nvnTextureFinalize(&linear); h_nvnTextureFinalize(&native);
-    nvn_dirty_remove_range(mem); mtl_pool_del(mem); free(mem);
-}
-
-static void rgba4_scaled_storage(void) {
-    void *mem = NULL; if (posix_memalign(&mem, getpagesize(), 262144)) abort(); memset(mem, 0, 262144);
-    pool_t pool = {.magic=MAGIC('P','O','O','L'), .mem=mem, .size=262144, .flags=0x24}; mtl_pool_add(mem, 262144); nvn_dirty_add_range(mem, 262144);
-    const uint16_t guest[2] = {0x8421, 0x0f00}, expanded[4] = {0x8421, 0x8421, 0x0f00, 0x0f00}, reversed[4] = {0x0f00, 0x0f00, 0x8421, 0x8421};
-    const uint16_t fill[4] = {0xabc5, 0xabc5, 0xabc5, 0xabc5}, partial[4] = {0xabc5, 0x0f00, 0x8421, 0xabc5};
-    NVNtextureBuilder tb; NVNtexture src[2], dst[2]; h_nvnTextureBuilderSetDefaults(&tb);
-    h_nvnTextureBuilderSetHeight(&tb, 1); h_nvnTextureBuilderSetFormat(&tb, NVN_FORMAT_RGBA4);
-    for (int linear = 0; linear < 2; linear++) {
-        h_nvnTextureBuilderSetFlags(&tb, linear ? NVN_TEXTURE_FLAGS_LINEAR : 0); h_nvnTextureBuilderSetStride(&tb, linear ? 256 : 0);
-        h_nvnTextureBuilderSetWidth(&tb, 2); h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 65536 + linear * 32768);
-        EXPECT("RGBA4 scale source init", 1, h_nvnTextureInitialize(&src[linear], &tb));
-        h_nvnTextureBuilderSetWidth(&tb, 4); h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 147456 + linear * 32768);
-        EXPECT("RGBA4 scale destination init", 1, h_nvnTextureInitialize(&dst[linear], &tb));
-    }
-    uint8_t *seed = (uint8_t *)mem + 131072, *seed_fill = seed + 4096, *out = seed + 8192;
-    memcpy(seed, guest, sizeof guest); memcpy(seed_fill, fill, sizeof fill);
-    NVNcommandBuffer cmd; EXPECT("RGBA4 scale command init", 1, h_nvnCommandBufferInitialize(&cmd, NULL));
-    h_nvnCommandBufferAddCommandMemory(&cmd, (NVNmemoryPool *)&pool, 0, 65536);
-    NVNcopyRegion sr = {0, 0, 0, 2, 1, 1}, whole = {0, 0, 0, 4, 1, 1}, middle = {1, 0, 0, 2, 1, 1};
-    for (int s = 0; s < 2; s++) for (int d = 0; d < 2; d++) for (int mode = 0; mode < 3; mode++) {
-        h_nvnCommandBufferBeginRecording(&cmd);
-        h_nvnCommandBufferCopyBufferToTexture(&cmd, (NVNbufferAddress)seed, &src[s], NULL, &sr, 0);
-        h_nvnCommandBufferCopyBufferToTexture(&cmd, (NVNbufferAddress)seed_fill, &dst[d], NULL, &whole, 0);
-        h_nvnCommandBufferCopyTextureToTexture(&cmd, &src[s], NULL, &sr, &dst[d], NULL, mode == 2 ? &middle : &whole, mode ? NVN_COPY_FLAGS_MIRROR_X_BIT : 0);
-        h_nvnCommandBufferCopyTextureToBuffer(&cmd, &dst[d], NULL, &whole, (NVNbufferAddress)out, 0);
-        NVNcommandHandle h = h_nvnCommandBufferEndRecording(&cmd); state_reset(); memset(&R, 0, sizeof R);
-        mtl_sub_begin(); mtl_exec((const uint8_t *)h); EXPECT("RGBA4 scaled copy commit", 1, mtl_wait(mtl_sub_commit(), 5000000000ull));
-        char name[128]; snprintf(name, sizeof name, "RGBA4 %s -> %s %s literal bits", s ? "linear" : "native", d ? "linear" : "native", mode == 2 ? "partial mirror" : mode ? "scaled mirror" : "scale");
-        EXPECT(name, 1, !memcmp(out, mode == 2 ? partial : mode ? reversed : expanded, 8));
-        if (d) { int untouched = 1; for (int i = 8; i < 256; i++) untouched &= ((uint8_t *)mem)[180224 + i] == 0;
-            EXPECT("RGBA4 scaled copy preserves linear row padding", 1, untouched); }
-    }
-    for (int i = 0; i < 2; i++) { h_nvnTextureFinalize(&dst[i]); h_nvnTextureFinalize(&src[i]); }
-    nvn_dirty_remove_range(mem); mtl_pool_del(mem); free(mem);
-}
-
-// A format-changing texture copy converts component values. It must not confuse that conversion with the bit-preserving conversion needed by a raw format view.
-static void rgba4_format_storage(void) {
-    const uint16_t packed[2] = {0x8421, 0x0f00};
-    const uint8_t rgba[8] = {17, 34, 68, 136, 0, 0, 255, 0};
-    for (int reverse = 0; reverse < 2; reverse++) for (int s = 0; s < 2; s++) for (int d = 0; d < 2; d++) {
-        void *mem = NULL; if (posix_memalign(&mem, getpagesize(), 262144)) abort(); memset(mem, 0, 262144);
-        pool_t pool = {.magic=MAGIC('P','O','O','L'), .mem=mem, .size=262144, .flags=0x24}; mtl_pool_add(mem, 262144); nvn_dirty_add_range(mem, 262144);
-        NVNtextureBuilder tb; NVNtexture src, dst; h_nvnTextureBuilderSetDefaults(&tb);
-        h_nvnTextureBuilderSetWidth(&tb, 2); h_nvnTextureBuilderSetHeight(&tb, 1);
-        h_nvnTextureBuilderSetFormat(&tb, reverse ? NVN_FORMAT_RGBA8 : NVN_FORMAT_RGBA4);
-        h_nvnTextureBuilderSetFlags(&tb, s ? NVN_TEXTURE_FLAGS_LINEAR : 0); h_nvnTextureBuilderSetStride(&tb, s ? 256 : 0);
-        h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 65536); EXPECT("RGBA4 numeric source init", 1, h_nvnTextureInitialize(&src, &tb));
-        h_nvnTextureBuilderSetFormat(&tb, reverse ? NVN_FORMAT_RGBA4 : NVN_FORMAT_RGBA8);
-        h_nvnTextureBuilderSetFlags(&tb, d ? NVN_TEXTURE_FLAGS_LINEAR : 0); h_nvnTextureBuilderSetStride(&tb, d ? 256 : 0);
-        h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 98304); EXPECT("RGBA4 numeric destination init", 1, h_nvnTextureInitialize(&dst, &tb));
-        uint8_t *seed = (uint8_t *)mem + 131072, *out = seed + 4096; memcpy(seed, reverse ? (const void *)rgba : packed, reverse ? 8 : 4);
-        NVNcommandBuffer cmd; EXPECT("RGBA4 numeric command init", 1, h_nvnCommandBufferInitialize(&cmd, NULL));
-        h_nvnCommandBufferAddCommandMemory(&cmd, (NVNmemoryPool *)&pool, 0, 65536); h_nvnCommandBufferBeginRecording(&cmd);
-        NVNcopyRegion r = {0, 0, 0, 2, 1, 1};
-        h_nvnCommandBufferCopyBufferToTexture(&cmd, (NVNbufferAddress)seed, &src, NULL, &r, 0);
-        h_nvnCommandBufferCopyTextureToTexture(&cmd, &src, NULL, &r, &dst, NULL, &r, 0);
-        h_nvnCommandBufferCopyTextureToBuffer(&cmd, &dst, NULL, &r, (NVNbufferAddress)out, 0);
-        NVNcommandHandle h = h_nvnCommandBufferEndRecording(&cmd); state_reset(); memset(&R, 0, sizeof R);
-        mtl_sub_begin(); mtl_exec((const uint8_t *)h); EXPECT("RGBA4 numeric commit", 1, mtl_wait(mtl_sub_commit(), 5000000000ull));
-        char name[128]; snprintf(name, sizeof name, "%s -> %s numeric conversion, %s -> %s", reverse ? "RGBA8" : "RGBA4", reverse ? "RGBA4" : "RGBA8", s ? "linear" : "native", d ? "linear" : "native");
-        EXPECT(name, 1, !memcmp(out, reverse ? (const void *)packed : rgba, reverse ? 4 : 8));
-        h_nvnTextureFinalize(&dst); h_nvnTextureFinalize(&src); nvn_dirty_remove_range(mem); mtl_pool_del(mem); free(mem);
-    }
-}
-
-// RGBA4 participates in a numeric copy with a linear RGB565 endpoint. Both packed encodings matter, even though only RGBA4's handling changes here.
-static void rgba4_rgb565_storage(void) {
-    const uint16_t rgba4[2] = {0x8421, 0x0f00}, rgb565[2] = {0x4102, 0xf800}, opaque_rgba4[2] = {0xf421, 0xff00};
-    for (int reverse = 0; reverse < 2; reverse++) {
-        void *mem = NULL; if (posix_memalign(&mem, getpagesize(), 262144)) abort(); memset(mem, 0, 262144);
-        pool_t pool = {.magic=MAGIC('P','O','O','L'), .mem=mem, .size=262144, .flags=0x24}; mtl_pool_add(mem, 262144); nvn_dirty_add_range(mem, 262144);
-        NVNtextureBuilder tb; NVNtexture src, dst; h_nvnTextureBuilderSetDefaults(&tb); h_nvnTextureBuilderSetWidth(&tb, 2); h_nvnTextureBuilderSetHeight(&tb, 1);
-        h_nvnTextureBuilderSetFormat(&tb, reverse ? NVN_FORMAT_RGB565 : NVN_FORMAT_RGBA4);
-        h_nvnTextureBuilderSetFlags(&tb, reverse ? NVN_TEXTURE_FLAGS_LINEAR : 0); h_nvnTextureBuilderSetStride(&tb, reverse ? 256 : 0);
-        h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 65536); EXPECT("RGBA4/RGB565 numeric source init", 1, h_nvnTextureInitialize(&src, &tb));
-        h_nvnTextureBuilderSetFormat(&tb, reverse ? NVN_FORMAT_RGBA4 : NVN_FORMAT_RGB565);
-        h_nvnTextureBuilderSetFlags(&tb, reverse ? 0 : NVN_TEXTURE_FLAGS_LINEAR); h_nvnTextureBuilderSetStride(&tb, reverse ? 0 : 256);
-        h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 98304); EXPECT("RGBA4/RGB565 numeric destination init", 1, h_nvnTextureInitialize(&dst, &tb));
-        uint8_t *seed = (uint8_t *)mem + 131072, *out = seed + 4096; memcpy(seed, reverse ? rgb565 : rgba4, 4);
-        NVNcommandBuffer cmd; EXPECT("RGBA4/RGB565 numeric command init", 1, h_nvnCommandBufferInitialize(&cmd, NULL));
-        h_nvnCommandBufferAddCommandMemory(&cmd, (NVNmemoryPool *)&pool, 0, 65536); h_nvnCommandBufferBeginRecording(&cmd);
-        NVNcopyRegion region = {0, 0, 0, 2, 1, 1};
-        h_nvnCommandBufferCopyBufferToTexture(&cmd, (NVNbufferAddress)seed, &src, NULL, &region, 0);
-        h_nvnCommandBufferCopyTextureToTexture(&cmd, &src, NULL, &region, &dst, NULL, &region, 0);
-        h_nvnCommandBufferCopyTextureToBuffer(&cmd, &dst, NULL, &region, (NVNbufferAddress)out, 0);
-        NVNcommandHandle handle = h_nvnCommandBufferEndRecording(&cmd); state_reset(); memset(&R, 0, sizeof R);
-        mtl_sub_begin(); mtl_exec((const uint8_t *)handle); EXPECT("RGBA4/RGB565 numeric commit", 1, mtl_wait(mtl_sub_commit(), 5000000000ull));
-        EXPECT(reverse ? "linear RGB565 -> RGBA4 literal guest bits" : "RGBA4 -> linear RGB565 literal guest bits", 1, !memcmp(out, reverse ? opaque_rgba4 : rgb565, 4));
-        h_nvnTextureFinalize(&dst); h_nvnTextureFinalize(&src); nvn_dirty_remove_range(mem); mtl_pool_del(mem); free(mem);
-    }
-}
-
-static void packed_format_view_copies(void) {
-    const uint16_t packed[2] = {0x8421, 0x0f00}; const uint8_t rgba[8] = {17, 34, 68, 136, 0, 0, 255, 0};
-    for (int mode = 0; mode < 4; mode++) for (int s = 0; s < 2; s++) for (int d = 0; d < 2; d++) {
-        void *mem = NULL; if (posix_memalign(&mem, getpagesize(), 262144)) abort(); memset(mem, 0, 262144);
-        pool_t pool = {.magic=MAGIC('P','O','O','L'), .mem=mem, .size=262144, .flags=0x24}; mtl_pool_add(mem, 262144); nvn_dirty_add_range(mem, 262144);
-        int sf = mode == 0 ? NVN_FORMAT_RGBA4 : mode == 3 ? NVN_FORMAT_RGBA8 : NVN_FORMAT_R16;
-        int df = mode == 1 ? NVN_FORMAT_RGBA4 : mode == 2 ? NVN_FORMAT_RGBA8 : NVN_FORMAT_R16;
-        NVNtextureBuilder tb; NVNtexture src, dst; h_nvnTextureBuilderSetDefaults(&tb); h_nvnTextureBuilderSetWidth(&tb, 2); h_nvnTextureBuilderSetHeight(&tb, 1);
-        h_nvnTextureBuilderSetFormat(&tb, sf); h_nvnTextureBuilderSetFlags(&tb, s ? NVN_TEXTURE_FLAGS_LINEAR : 0); h_nvnTextureBuilderSetStride(&tb, s ? 256 : 0);
-        h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 65536); EXPECT("packed view copy source init", 1, h_nvnTextureInitialize(&src, &tb));
-        h_nvnTextureBuilderSetFormat(&tb, df); h_nvnTextureBuilderSetFlags(&tb, d ? NVN_TEXTURE_FLAGS_LINEAR : 0); h_nvnTextureBuilderSetStride(&tb, d ? 256 : 0);
-        h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&pool, 98304); EXPECT("packed view copy destination init", 1, h_nvnTextureInitialize(&dst, &tb));
-        NVNtextureView view; h_nvnTextureViewSetDefaults(&view); h_nvnTextureViewSetFormat(&view, mode < 2 ? NVN_FORMAT_R16 : NVN_FORMAT_RGBA4);
-        uint8_t *seed = (uint8_t *)mem + 131072, *out = seed + 4096; memcpy(seed, mode == 3 ? (const void *)rgba : packed, mode == 3 ? 8 : 4);
-        NVNcommandBuffer cmd; EXPECT("packed view copy command init", 1, h_nvnCommandBufferInitialize(&cmd, NULL));
-        h_nvnCommandBufferAddCommandMemory(&cmd, (NVNmemoryPool *)&pool, 0, 65536); h_nvnCommandBufferBeginRecording(&cmd);
-        NVNcopyRegion r = {0, 0, 0, 2, 1, 1};
-        h_nvnCommandBufferCopyBufferToTexture(&cmd, (NVNbufferAddress)seed, &src, NULL, &r, 0);
-        h_nvnCommandBufferCopyTextureToTexture(&cmd, &src, mode == 0 || mode == 2 ? &view : NULL, &r, &dst, mode == 1 || mode == 3 ? &view : NULL, &r, 0);
-        h_nvnCommandBufferCopyTextureToBuffer(&cmd, &dst, NULL, &r, (NVNbufferAddress)out, 0);
-        NVNcommandHandle h = h_nvnCommandBufferEndRecording(&cmd); state_reset(); memset(&R, 0, sizeof R);
-        mtl_sub_begin(); mtl_exec((const uint8_t *)h); EXPECT("packed view copy commit", 1, mtl_wait(mtl_sub_commit(), 5000000000ull));
-        char name[128]; snprintf(name, sizeof name, "packed view copy mode%d %s -> %s literal guest bits", mode, s ? "linear" : "native", d ? "linear" : "native");
-        EXPECT(name, 1, !memcmp(out, mode == 2 ? (const void *)rgba : packed, mode == 2 ? 8 : 4));
-        h_nvnTextureFinalize(&dst); h_nvnTextureFinalize(&src); nvn_dirty_remove_range(mem); mtl_pool_del(mem); free(mem);
-    }
-}
-
-// An integer backing sampled through an RGBA4 view still needs its guest bits when the shader binds it as a uint image. A converted sampled shadow is not the writable image.
-static void inverse_rgba4_image(int ranged) {
-    int tid = 650 + ranged;
-    tex_t t = {.magic=MAGIC('T','E','X',0), .serial=99650+(unsigned)ranged};
-    t.d = (nvn_texdesc){.target=ranged ? NVN_TEXTURE_TARGET_2D_ARRAY : NVN_TEXTURE_TARGET_2D, .format=NVN_FORMAT_R16UI,
-        .width=ranged ? 4 : 2, .height=ranged ? 2 : 1, .depth=ranged ? 2 : 1, .levels=ranged ? 2 : 1, .samples=1, .flags=NVN_TEXTURE_FLAGS_IMAGE};
-    MTLTextureDescriptor *d = tex_desc(&t, 0); d.storageMode = MTLStorageModeShared;
-    id<MTLTexture> base = [g_dev newTextureWithDescriptor:d];
-    EXPECT("inverse RGBA4 image backing created", 1, base != nil); if (!base) return;
-    res_add(base);
-    const uint16_t seed[8] = {0x8421,0x0f00,0x8421,0x0f00,0x8421,0x0f00,0x8421,0x0f00};
-    for (unsigned lv = 0; lv < t.d.levels; lv++) for (unsigned sl = 0; sl < t.d.depth; sl++) {
-        NSUInteger w = t.d.width >> lv, h = t.d.height >> lv;
-        [base replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:lv slice:sl withBytes:seed bytesPerRow:w * 2 bytesPerImage:w * h * 2];
-    }
-    serial_put(t.serial, base);
-    // The C serial cache retains base; mtl_tex_release below deletes its entry and defers GPU retirement. The analyzer reports that untracked ownership here.
-    // NOLINTNEXTLINE(clang-analyzer-osx.cocoa.RetainCount)
-    view_t v = {.set_format=1, .format=NVN_FORMAT_RGBA4};
-    if (ranged) { v.set_levels=v.set_layers=v.set_target=1; v.base_level=v.min_layer=1; v.nlevels=v.nlayers=1; v.target=NVN_TEXTURE_TARGET_2D; }
-    mtl_reg_image(tid, &t, &v);
-    NSError *error = nil;
-    id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void put(texture2d<uint, access::write> t [[texture(0)]]) { t.write(uint4(0x1357), uint2(0, 0)); }\n" options:nil error:&error];
-    id<MTLFunction> fn = [lib newFunctionWithName:@"put"];
-    id<MTLComputePipelineState> ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&error] : nil;
-    EXPECT("inverse RGBA4 image writer compiled", 1, ps != nil);
-    if (ps) {
-        nvn_rbind binding = {.kind=NVN_RB_IMG, .dpf=NVN_DPF_UINT, .dtt=MTLTextureType2D, .rw=1};
-        NvShader *cs = [NvShader new]; cs->stage=5; cs->rf.nb=1; cs->rf.b[0]=binding;
-        NvProg *pr = [NvProg new]; pr->sh[5]=cs;
-        state_reset(); memset(&R, 0, sizeof R); S.img[5][0]=(uint64_t)tid; mtl_sub_begin();
-        image_prepare(pr, 1u << 5); id<MTL4ComputeCommandEncoder> ce = dispatch_enc(); enc_c_pso(ce, ps);
-        os_unfair_lock_lock(&g_rmu); uint64_t rid; int real;
-        id<MTLTexture> image = img_binding(tid, &binding, &rid, &real); os_unfair_lock_unlock(&g_rmu);
-        EXPECT("inverse RGBA4 view binds a real writable integer image", 1, real && image.pixelFormat == MTLPixelFormatR16Uint && (image.usage & MTLTextureUsageShaderWrite));
-        EXPECT("inverse RGBA4 image keeps its selected dimensions", 1, image.width == 2 && image.height == 1);
-        [g_ct setTexture:image.gpuResourceID atIndex:0]; enc_c_dispatch(ce, MTLSizeMake(1,1,1), MTLSizeMake(1,1,1)); packed16_views_flush();
-        EXPECT("inverse RGBA4 image store commit", 1, mtl_wait(mtl_sub_commit(), 5000000000ull));
-        EXPECT("inverse RGBA4 image store GPU success", 0, mtl_last_commit_error());
-        id<MTLTexture> actual = tex_mtl(&t); int bad = 0;
-        for (unsigned lv = 0; lv < t.d.levels; lv++) for (unsigned sl = 0; sl < t.d.depth; sl++) {
-            NSUInteger w = t.d.width >> lv, h = t.d.height >> lv; uint16_t got[8] = {0};
-            [actual getBytes:got bytesPerRow:w * 2 bytesPerImage:w * h * 2 fromRegion:MTLRegionMake2D(0,0,w,h) mipmapLevel:lv slice:sl];
-            for (NSUInteger i = 0; i < w * h; i++) bad += got[i] != (lv == (unsigned)ranged && sl == (unsigned)ranged && !i ? 0x1357 : seed[i]);
-        }
-        EXPECT("inverse RGBA4 image store preserves literal guest bits and other subresources", 0, bad);
-        uint16_t read[2] = {0}; NVNcopyRegion region = {0,0,0,2,1,1};
-        mtl_read_texels(&t, (unsigned)ranged, (unsigned)ranged, &region, (uint8_t *)read, 4, 4);
-        EXPECT("inverse RGBA4 image store ReadTexels sees literal guest words", 1, read[0] == 0x1357 && read[1] == 0x0f00);
-    }
-    S.img[5][0]=0; mtl_reg_tex(tid, NULL, NULL); mtl_tex_release(&t);
-}
-
 int main(void) { @autoreleasepool {
     alarm(60); if (setvbuf(stdout, NULL, _IONBF, 0)) abort();   // GPU, callback and pthread failures must not leave the check target hanging.
     mtl_init();
@@ -636,14 +420,7 @@ int main(void) { @autoreleasepool {
     h_nvnTextureFinalize(&pk); h_nvnTextureFinalize(&tex); nvn_dirty_remove_range(mem); mtl_pool_del(mem); free(mem);
     sparse_reads(&region, expected);
     stale_pools();
-    packed_copies(NVN_FORMAT_RGB565, 500); packed_copies(NVN_FORMAT_RGB5A1, 501); packed_copies(NVN_FORMAT_RGB5, 502);
-    packed_copies(NVN_FORMAT_RGBA4, 503);
-    packed_cross_storage(NVN_FORMAT_RGBA4);
-    rgba4_scaled_storage();
-    rgba4_format_storage();
-    rgba4_rgb565_storage();
-    packed_format_view_copies();
-    inverse_rgba4_image(0); inverse_rgba4_image(1);
+    packed_copies(NVN_FORMAT_RGB565, 500); packed_copies(NVN_FORMAT_RGB5A1, 501); packed_copies(NVN_FORMAT_RGB5, 502); packed_copies(NVN_FORMAT_RGBA4, 503);
     mirror_completion();
     printf("READBACK cases=%d failed=%d\n", cases, failed); return failed != 0;
 } }

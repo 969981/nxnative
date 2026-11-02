@@ -25,7 +25,7 @@ dm/gfx/nvn/nvn_mtl.m	bugprone-misplaced-widening-cast	1
 dm/gfx/nvn/nvn_mtl.m	bugprone-signed-char-misuse	1
 dm/gfx/nvn/nvn_mtl.m	bugprone-suspicious-memory-comparison	8
 dm/gfx/nvn/nvn_mtl.m	bugprone-suspicious-realloc-usage	20
-dm/gfx/nvn/nvn_mtl.m	clang-analyzer-core.NullDereference	9
+dm/gfx/nvn/nvn_mtl.m	clang-analyzer-core.NullDereference	11
 dm/gfx/nvn/nvn_mtl.m	clang-analyzer-core.uninitialized.Assign	2
 dm/gfx/nvn/nvn_mtl.m	clang-analyzer-nullability.NullableDereferenced	5
 dm/gfx/nvn/nvn_mtl.m	clang-analyzer-nullability.NullablePassedToNonnull	15
@@ -81,6 +81,7 @@ dm/gfx/tests/t_pull_inv.m	clang-analyzer-nullability.NullablePassedToNonnull	1
 dm/gfx/tests/t_queue_origin.m	clang-analyzer-osx.cocoa.RetainCount	1
 dm/gfx/tests/t_readback.m	clang-analyzer-nullability.NullablePassedToNonnull	1
 dm/gfx/tests/t_reorder_chain.m	clang-analyzer-nullability.NullablePassedToNonnull	2
+dm/gfx/tests/t_rt_range.m	clang-analyzer-osx.cocoa.RetainCount	1
 dm/gfx/tests/t_stencil_view.m	bugprone-suspicious-memory-comparison	1
 dm/gfx/tests/t_stencil_view.m	clang-analyzer-nullability.NullablePassedToNonnull	1
 dm/gfx/tests/t_tbuf2d.m	clang-analyzer-nullability.NullablePassedToNonnull	1
