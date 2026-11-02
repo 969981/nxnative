@@ -228,6 +228,8 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - abort in `nn::sm::Initialize` under `nn::pctl::IsFreeCommunicationAvailable` (Engage, entering its first battle map). → [Parental controls and free communication](../reference/services.md#parental-controls-and-free-communication)
 - play report calls met entering the save select (3D World); undefined `nn::ldn::` / `nn::socket::` imports with no hook, found from the import list before they were met (Big Brain Academy). → [Network interface, LDN, socket and play report calls](../reference/services.md#network-interface-ldn-socket-and-play-report-calls)
 - the boot sits at a black loading screen for good, CPU nearly idle, every thread waiting, about 1 boot in 6 (3 in 4 with four Mac hosts at once); the title movie is never opened, and the save files are never probed. → [Network requests stay on hold before they settle](../reference/services.md#network-requests-stay-on-hold-before-they-settle)
+- a real UDP/TCP receive returns guest `EFAULT` (14) when its otherwise valid destination belongs to a graphics-tracked read-only page. → [Socket receive into write-protected tracked guest pages](../reference/services.md#socket-receive-into-write-protected-tracked-guest-pages)
+- `GetSockOpt` returns guest `EFAULT` (14) for an otherwise valid result buffer on a graphics-tracked read-only page. → [Socket option output into tracked write-protected guest pages](../reference/services.md#socket-option-output-into-tracked-write-protected-guest-pages)
 - one thread at 100% CPU from boot, with one SVC in 99 s (`NexusRevolution Socket`, `main+0x92c7c4`, the game's network thread). → [Socket `Poll` and `Select` with nothing to wait on](../reference/services.md#socket-poll-and-select-with-nothing-to-wait-on)
 - the first comparison in `nnMain` aborted in `sm`. → [Language codes](../reference/services.md#language-codes)
 - `DM_LANG=zh-Hans` or `zh-Hant` reaches the game unchanged, but its startup menu falls back to Japanese; the older `zh-CN` or `zh-TW` spelling selects Chinese. → [Chinese language aliases in settings comparisons](../reference/services.md#chinese-language-aliases-in-settings-comparisons)
@@ -256,6 +258,8 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - an abort connecting to `pl:u` at boot; a failed `nn::audio` call at boot. → [Built-in fonts and the audio device notification of SDK 21](../reference/services.md#built-in-fonts-and-the-audio-device-notification-of-sdk-21)
 - an abort in `nn::hid` at boot, in a Switch 2 game that sets up the Joy-Con's mouse mode. → [The Joy-Con mouse pointer](../reference/services.md#the-joy-con-mouse-pointer)
 - a Switch 2 game presents at 720p, with its upscaler at the matching low size. → [The display's largest buffer](../reference/services.md#the-displays-largest-buffer)
+- a native port cannot create or join a game's LAN or local-wireless room because its socket and LDN service hooks always return unavailable. → [Opt-in native LAN sockets and LDN over IP](../reference/services.md#opt-in-native-lan-sockets-and-ldn-over-ip)
+- the SDK's cancellable `GetHostByName` path reaches an unavailable resolver service or cannot retire its pending lookup when canceled or finalized. → [SDK DNS cancellation cannot retire an in-flight lookup](../reference/services.md#sdk-dns-cancellation-cannot-retire-an-in-flight-lookup)
 
 ## Movies
 
