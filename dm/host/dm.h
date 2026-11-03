@@ -54,6 +54,7 @@ typedef struct {
     struct { char name[32]; uint64_t off; } ue_cvar[8];   // Unreal console variables found by their registered names (patch_nso.py, ue_cvar.py; UE_CVAR:<name>): each one's TAutoConsoleVariable
     int n_ue_cvar;
     uint64_t fps_state_off;    // frame step state page (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 main); 0 = none
+    unsigned camera_aspect;   // CAMERA_ASPECT fixups capability: state +0x40 desired, +0x44 camera-writer acknowledgement
     int64_t patch_off;         // patch area relative to the base; negative = before the base (image too large, see patch_nso.py FAR), and size does not include it
     uint64_t image_size, file_image_len, patch_len;   // only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
     uint64_t back_off, back_len;   // a second patch area after the image (patch_nso.py TWO: a text longer than a B reaches), inside size; 0 = none

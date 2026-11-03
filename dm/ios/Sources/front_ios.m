@@ -1,5 +1,5 @@
-// iOS front end (the iOS implementation of front.h): a centered 16:9 Metal view (black bars on both sides) + a full-screen virtual gamepad layer (DmGamepad.m, controls drawn over the picture);
-// with a TV connected the Metal view is on the TV and the phone shows the pad (DmTVSceneDelegate).
+// iOS front end (the iOS implementation of front.h): an edge-to-edge Metal view + a full-screen virtual gamepad layer (DmGamepad.m, controls drawn over the picture). Presentation preserves the game's framing unless a supported camera patch widens it.
+// With a TV connected the Metal view is on the TV and the phone shows the pad (DmTVSceneDelegate).
 // The host runs on the big-stack thread started by main.m; front_run runs the guest directly on the calling thread.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -49,6 +49,7 @@ static UILabel *front_ios_fps_label(void);
     [super layoutSubviews];
     CAMetalLayer *l = (CAMetalLayer *)self.layer;
     l.drawableSize = CGSizeMake(self.bounds.size.width * l.contentsScale, self.bounds.size.height * l.contentsScale);
+    dm_game_aspect_drawable(l.drawableSize.width, l.drawableSize.height);
 }
 @end
 static CGRect fit_16_9(CGRect b) {   // the largest centered 16:9 rectangle in b
@@ -117,7 +118,7 @@ static void launcher_done(void) { [g_root startGame]; }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; if (!self.game) return;
-    if (self.game.superview == self.view) self.game.frame = fit_16_9(b);   // on a TV the TV's view lays it out
+    if (self.game.superview == self.view) self.game.frame = b;   // Presentation fits unsupported games; the TV's controller owns its layout.
     if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
         self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
