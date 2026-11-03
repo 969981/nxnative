@@ -9,10 +9,10 @@ uint64_t now_ns(void) { return bp_now(); }
 static int checks, failed;
 #define CHECK(c, label) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s\n", label); } } while (0)
 
-static id<MTLTexture> target(tex_t *t, uint64_t serial) {
+static id<MTLTexture> target(tex_t *t, uint64_t serial, int format) {
     *t = (tex_t){.magic=MAGIC('T','E','X',0), .serial=serial};
-    t->d = (nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D, .format=NVN_FORMAT_RGBA8,
-        .width=4, .height=4, .depth=1, .levels=1, .samples=1};
+    t->d = (nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D, .format=format,
+        .width=4, .height=4, .depth=1, .levels=1, .samples=1, .flags=format == NVN_FORMAT_R32UI ? NVN_TEXTURE_FLAGS_IMAGE : 0};
     MTLTextureDescriptor *d = tex_desc(t, 0); d.storageMode = MTLStorageModeShared;
     id<MTLTexture> texture = [g_dev newTextureWithDescriptor:d];
     CHECK(texture != nil, "render target created");
@@ -43,14 +43,23 @@ static void pixels(id<MTLBuffer> b, unsigned offset, const uint8_t want[4], cons
 static void slot_case(NvProg *pr, id<MTLRenderPipelineState> pipeline, int slot, int index) {
     int before = failed, tid = 600 + index;
     NvShader *fs = pr->sh[1]; fs->rf.b[0].reg = slot;
+    int image = fs->rf.b[0].kind == NVN_RB_IMG;
     tex_t source, output;
-    id<MTLTexture> original = target(&source, 99700 + index * 2);
-    id<MTLTexture> destination = target(&output, 99701 + index * 2);
+    id<MTLTexture> original = target(&source, 99700 + index * 2, image ? NVN_FORMAT_R32UI : NVN_FORMAT_RGBA8);
+    id<MTLTexture> destination = target(&output, 99701 + index * 2, NVN_FORMAT_RGBA8);
     mtl_reg_tex(tid, &source, NULL);
     id<MTLBuffer> result = [g_dev newBufferWithLength:2048 options:MTLResourceStorageModeShared]; res_add(result);
     state_reset(); memset(&R, 0, sizeof R); mtl_sub_begin();
-    R.has_rt = 1; R.rt.n = 1; R.rt.color[0] = &source; S.tex[1][slot] = tid;
-    clear(MTLClearColorMake(1, 0, 0, 1));
+    R.has_rt = 1; R.rt.n = 1; R.rt.color[0] = &source;
+    if (image) S.img[1][slot] = tid; else S.tex[1][slot] = tid;
+    clear(MTLClearColorMake(image ? 17 : 1, 0, 0, 1));
+    if (image) {
+        fs->rf.b[0].rw = 1; fb_prepare(pr);
+        CHECK(!g_fb_n && g_enc, "writes stay on the original attachment");
+        fs->rf.b[0].rw = 0; fs->rf.b[0].atom = 1; fb_prepare(pr);
+        CHECK(!g_fb_n && g_enc, "atomics stay on the original attachment");
+        fs->rf.b[0].atom = 0;
+    }
     fb_prepare(pr);
     CHECK(!g_enc, "snapshot closes the preceding render pass");
     CHECK(g_fb_n == 1, "feedback attachment receives a snapshot");
@@ -60,13 +69,21 @@ static void slot_case(NvProg *pr, id<MTLRenderPipelineState> pipeline, int slot,
     // Overwrite the attachment after the snapshot, then render the sampled value
     // into a distinct target. This makes a missing snapshot fail deterministically
     // even on GPUs that happen to tolerate sampling an attached render target.
-    clear(MTLClearColorMake(0, 1, 0, 1)); rp_end();
+    clear(MTLClearColorMake(image ? 29 : 0, 1, 0, 1)); rp_end();
     R.rt.color[0] = &output;
     sample(fs, pipeline);
     uint64_t bound = *(uint64_t *)((uint8_t *)fs->ab_buf.contents + fs->ab_off);
     CHECK(g_fb_n == 1 && bound == g_fb_rid[0] && bound != original.gpuResourceID._impl,
           "production argument buffer contains the snapshot resource ID");
     readback(destination, result, 0);
+    if (image) {
+        // A different slot can write the same resource: a snapshot already available for a reader must never redirect a writer.
+        fs->rf.b[0].rw = 1; args_dirty_all();
+        sample(fs, pipeline);
+        bound = *(uint64_t *)((uint8_t *)fs->ab_buf.contents + fs->ab_off);
+        CHECK(bound == original.gpuResourceID._impl, "a writable image bypasses an available snapshot");
+        fs->rf.b[0].rw = 0; args_dirty_all();
+    }
     // With a different attachment the following draw restores the original binding.
     fb_prepare(pr);
     CHECK(g_fb_n == 0, "following draw needs no snapshot");
@@ -84,7 +101,7 @@ static void slot_case(NvProg *pr, id<MTLRenderPipelineState> pipeline, int slot,
 // The rule without a listed shader: copy once, reuse until a barrier, end the pass when an earlier draw of it read the attachment directly.
 static void reuse_case(NvProg *pr) {
     int before = failed, tid = 650; NvShader *fs = pr->sh[1]; fs->rf.b[0].reg = 0;
-    tex_t source; target(&source, 99790);
+    tex_t source; target(&source, 99790, NVN_FORMAT_RGBA8);
     mtl_reg_tex(tid, &source, NULL);
     state_reset(); memset(&R, 0, sizeof R); mtl_sub_begin();
     R.has_rt = 1; R.rt.n = 1; R.rt.color[0] = &source; S.tex[1][0] = tid;
@@ -111,7 +128,7 @@ static void reuse_case(NvProg *pr) {
     CHECK(g_fb_n == 1 && !g_enc && g_fb_count == copies + 2, "a game barrier makes the next writing draw take a fresh snapshot");
     rp_end();
     // The depth attachment read, then written in the same pass (only serials matter to the rule: the attachment is named after the pass opens)
-    { tex_t output, depth; target(&output, 99791); target(&depth, 99792); mtl_reg_tex(651, &depth, NULL);   // NOLINT(clang-analyzer-osx.cocoa.RetainCount): g_by_serial owns both textures (serial_put's CFBridgingRetain) until mtl_tex_release below, not a leak
+    { tex_t output, depth; target(&output, 99791, NVN_FORMAT_RGBA8); target(&depth, 99792, NVN_FORMAT_RGBA8); mtl_reg_tex(651, &depth, NULL);   // NOLINT(clang-analyzer-osx.cocoa.RetainCount): g_by_serial owns both textures (serial_put's CFBridgingRetain) until mtl_tex_release below, not a leak
       R.rt.color[0] = &output; R.rt.depth = NULL; S.tex[1][0] = 651; S.chmask.mask = 0xffffffffu; S.ds.dt = 1; S.ds.dw = 0;
       clear(MTLClearColorMake(0, 0, 0, 1)); R.rt.depth = &depth;
       fb_prepare(pr);
@@ -137,6 +154,8 @@ int main(void) { @autoreleasepool {
         "vertex float4 v(uint i[[vertex_id]]) { return float4(i == 1 ? 3.0 : -1.0, i == 2 ? 3.0 : -1.0, 0, 1); }\n"
         "struct A {texture2d<float, access::read> source[[id(0)]];};\n"
         "fragment float4 f(float4 p[[position]], constant A&a[[buffer(0)]]) {return a.source.read(uint2(p.xy));}\n"
+        "struct I {texture2d<uint, access::read> source[[id(0)]];};\n"
+        "fragment float4 mask(float4 p[[position]], constant I&a[[buffer(0)]]) {uint v = a.source.read(uint2(p.xy)).x; return float4(v==17u, v==29u, 0, 1);}\n"
         options:nil error:&error];
     CHECK(lib != nil, "synthetic shader compiles");
     if (!lib) { fprintf(stderr, "%s\n", error.localizedDescription.UTF8String); return 1; }
@@ -153,6 +172,13 @@ int main(void) { @autoreleasepool {
     const int slots[] = {0, 128, 255};
     for (int i = 0; i < 3; i++) slot_case(pr, pipeline, slots[i], i);
     reuse_case(pr);
+    fs->fn = [lib newFunctionWithName:@"mask"];
+    fs->ae = [fs->fn newArgumentEncoderWithBufferIndex:0]; fs->arg_len = fs->ae.encodedLength;
+    fs->rf.b[0] = (nvn_rbind){.kind=NVN_RB_IMG, .aid=0, .dtt=MTLTextureType2D, .dpf=NVN_DPF_UINT};
+    d.fragmentFunction = fs->fn;
+    pipeline = [g_dev newRenderPipelineStateWithDescriptor:d error:&error];
+    CHECK(pipeline != nil, "integer image pipeline compiles");
+    if (pipeline) slot_case(pr, pipeline, 3, 3);
     printf("feedback snapshot: %d checks, %d failed\n", checks, failed);
     return failed != 0;
 } }
