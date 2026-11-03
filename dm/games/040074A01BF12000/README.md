@@ -81,3 +81,5 @@ Each step below stopped the boot before its fix:
 - [Mesh geometry groups sized to the vertex output](../../../docs/reference/shaders.md#mesh-geometry-groups-sized-to-the-vertex-output): 388-byte vertices, over Metal's mesh limit at 32 triangles a group.
 - [Ampere shader code (Switch 2)](../../../docs/reference/shaders.md#ampere-shader-code-switch-2): SUATOM (0x593) in two agl technique compute shaders, the last two of the package's 22,852 that did not translate.
 - [Shader libraries loaded when the program is made](../../../docs/reference/shaders.md#shader-libraries-loaded-when-the-program-is-made): a new area's 3 to 7 libraries loaded on the submit thread, up to 4 s with the drive slowed.
+- [Reading a RomFS image takes tens of minutes on a slow drive](../../../docs/reference/packing.md#reading-a-romfs-image-takes-tens-of-minutes-on-a-slow-drive): the first build in WSL, whose shader sources' checks took 30 minutes.
+- [The Windows Metal compiler takes a path with spaces as several files](../../../docs/reference/packing.md#the-windows-metal-compiler-takes-a-path-with-spaces-as-several-files): its dump folder's name, packing in WSL.
