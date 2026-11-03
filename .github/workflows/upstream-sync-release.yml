@@ -1,0 +1,236 @@
+name: Sync nxnative upstream and publish source release
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: Repackage and publish the currently tracked upstream revision
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/upstream-sync-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nxnative-upstream-sync-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync seedds/nxnative main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.import.outputs.changed }}
+      upstream_sha: ${{ steps.import.outputs.upstream_sha }}
+      short_sha: ${{ steps.import.outputs.short_sha }}
+      local_sha: ${{ steps.import.outputs.local_sha }}
+    steps:
+      - name: Checkout local main history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Detect upstream changes and safely import source
+        id: import
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add nxnative-upstream https://github.com/seedds/nxnative.git
+          git fetch --no-tags nxnative-upstream +refs/heads/main:refs/remotes/nxnative-upstream/main
+          before="$(git rev-parse HEAD)"
+          upstream="$(git rev-parse refs/remotes/nxnative-upstream/main)"
+          previous="$(git show "$before:.nxnative-upstream-sha" 2>/dev/null || true)"
+          echo "upstream_sha=$upstream" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(printf '%s' "$upstream" | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          if [[ "$previous" == "$upstream" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "local_sha=$before" >> "$GITHUB_OUTPUT"
+            echo "No new upstream commits: $upstream"
+            exit 0
+          fi
+
+          # Do not discard user edits or follow a rewritten upstream history.
+          if [[ -n "$previous" ]]; then
+            git cat-file -e "$previous^{commit}" || {
+              echo "::error::Previous upstream commit is missing."
+              exit 1
+            }
+            if ! git merge-base --is-ancestor "$previous" "$upstream"; then
+              echo "::error::Upstream force-pushed or rebased; manual review required."
+              exit 1
+            fi
+            baseline="$previous"
+          else
+            baseline="$(git merge-base "$before" "$upstream")" || {
+              echo "::error::No shared history with seedds/nxnative."
+              exit 1
+            }
+          fi
+          if ! git diff --quiet "$baseline" "$before" -- . \
+              ':(exclude).github/workflows' ':(exclude).nxnative-upstream-sha'; then
+            echo "::error::Detected local modifications outside CI; refusing to overwrite them."
+            git diff --name-only "$baseline" "$before" -- . \
+              ':(exclude).github/workflows' ':(exclude).nxnative-upstream-sha'
+            exit 1
+          fi
+
+          # Keep repository-controlled workflows unchanged; GitHub Actions
+          # GITHUB_TOKEN cannot write modified workflow files to the remote.
+          git read-tree --reset "$upstream^{tree}"
+          git restore --source="$before" --staged -- .github/workflows
+          printf '%s\n' "$upstream" > .nxnative-upstream-sha
+          git add .nxnative-upstream-sha
+          new_tree="$(git write-tree)"
+          sync_commit="$(printf 'sync: seedds/nxnative %s [skip ci]\n' "$upstream" |
+            git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                commit-tree "$new_tree" -p "$before")"
+          git push origin "$sync_commit:refs/heads/main"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "local_sha=$sync_commit" >> "$GITHUB_OUTPUT"
+          echo "Imported upstream $upstream as local commit $sync_commit"
+
+  package:
+    name: Verify and package complete nxnative source
+    needs: sync
+    if: needs.sync.outputs.changed == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact synchronized source revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.local_sha }}
+          persist-credentials: false
+
+      - name: Check required sources and exclude game data/keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s README.md
+          test -s LICENSE
+          test -s scripts/build_ipa_from_nsp.py
+          test -d dm/host
+          test -d dm/gfx
+          test -d dm/ios
+          test -d dm/mac
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import PurePosixPath
+          files = [f for f in subprocess.check_output(["git", "ls-files", "-z"]).decode("utf-8").split("\0") if f]
+          disallowed = (".nsp", ".nsz", ".xci", ".xcz", ".nro", ".nca", ".tik", ".keys", ".ipa", ".xip")
+          invalid = [name for name in files
+                     if name.lower().endswith(disallowed)
+                     or PurePosixPath(name).name.lower() in {"prod.keys", "title.keys"}]
+          if invalid:
+              raise SystemExit("Refusing to publish potential copyrighted or secret material: " + repr(invalid[:15]))
+          if len(files) < 50:
+              raise SystemExit("Tracked nxnative source tree is unexpectedly small")
+          print(f"Validated {len(files)} tracked source and documentation files")
+          PY
+
+      - name: Create ZIP/TAR.GZ and source provenance checksums
+        shell: bash
+        env:
+          UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+          LOCAL_SHA: ${{ needs.sync.outputs.local_sha }}
+          SHORT_SHA: ${{ needs.sync.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          git archive --format=zip -9 --prefix=nxnative/ \
+            -o "release/nxnative-source-$SHORT_SHA.zip" HEAD
+          git archive --format=tar.gz -9 --prefix=nxnative/ \
+            -o "release/nxnative-source-$SHORT_SHA.tar.gz" HEAD
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          short = os.environ["SHORT_SHA"]
+          zip_file = Path(f"release/nxnative-source-{short}.zip")
+          tar_file = Path(f"release/nxnative-source-{short}.tar.gz")
+          required = ("nxnative/README.md", "nxnative/LICENSE",
+                      "nxnative/scripts/build_ipa_from_nsp.py")
+          with zipfile.ZipFile(zip_file) as z:
+              if z.testzip() is not None:
+                  raise SystemExit("ZIP CRC verification failed")
+              present = set(z.namelist())
+              if not all(p in present for p in required):
+                  raise SystemExit("Required files missing from source ZIP")
+              count = len(present)
+          with tarfile.open(tar_file, "r:gz") as t:
+              names = set(t.getnames())
+              if not all(p in names for p in required):
+                  raise SystemExit("Required files missing from TAR.GZ")
+          info = Path("release/BUILD-INFO.txt")
+          info.write_text(
+              "Upstream: https://github.com/seedds/nxnative\n"
+              "Upstream branch: main\n"
+              f"Upstream commit: {os.environ['UPSTREAM_SHA']}\n"
+              f"Local sync commit: {os.environ['LOCAL_SHA']}\n"
+              f"ZIP archive entries: {count}\n"
+              "Release type: source code and build tools, NOT a playable IPA/Mac game app.\n"
+              "nxnative needs a compatible Apple Silicon Mac/Xcode and the user's own game files to build an IPA or macOS game app.\n")
+          checks = Path("release/SHA256SUMS.txt")
+          with checks.open("w") as out:
+              for path in (zip_file, tar_file, info):
+                  out.write(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n")
+          print(f"Verified {count} ZIP entries, TAR.GZ structure, and release checksums")
+          PY
+
+      - name: Upload verified source archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxnative-source-archives
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish nxnative upstream snapshot
+    needs: [sync, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified source archives
+        uses: actions/download-artifact@v4
+        with:
+          name: nxnative-source-archives
+          path: release
+
+      - name: Create commit-specific GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: upstream-${{ needs.sync.outputs.short_sha }}
+          name: nxnative source ${{ needs.sync.outputs.short_sha }}
+          target_commitish: ${{ needs.sync.outputs.local_sha }}
+          make_latest: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          body: |
+            Automated source snapshot of [seedds/nxnative](https://github.com/seedds/nxnative) `main`.
+
+            Original upstream commit: `${{ needs.sync.outputs.upstream_sha }}`.
+
+            Includes the complete source tree and helper scripts as ZIP/TAR.GZ, SHA-256 checksums and build metadata.
+            **Not an IPA or runnable Mac app**: game-specific builds require a compatible Apple Silicon Mac/Xcode and game files supplied by the end user. Neither game files nor keys are included.
+            For compilation follow the upstream README and docs/development.md.
+          files: |
+            release/nxnative-source-*.zip
+            release/nxnative-source-*.tar.gz
+            release/SHA256SUMS.txt
+            release/BUILD-INFO.txt
