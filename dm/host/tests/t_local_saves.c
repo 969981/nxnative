@@ -176,6 +176,42 @@ static int device_only(void) {
     CHECK(h_fs_MountDeviceSave("island") == RES_OK && guest_has("island:/slot", "alice"));
     return 0;
 }
+extern void *(*t_guest_sym)(const char *);
+static int sdk_cache_mounted, sdk_queries, sdk_unmounts, sdk_host_lock_free = 1;
+static int sdk_is_mounted(const char *name) {
+    int locked = pthread_mutex_trylock(&g_path_lock);
+    if (locked) sdk_host_lock_free = 0;
+    else pthread_mutex_unlock(&g_path_lock);
+    sdk_queries++;
+    return !strcmp(name, "cache") && sdk_cache_mounted;
+}
+static void sdk_unmount(const char *name) {
+    if (strcmp(name, "cache") || !sdk_cache_mounted) abort();
+    int locked = pthread_mutex_trylock(&g_path_lock);
+    if (locked) sdk_host_lock_free = 0;
+    else pthread_mutex_unlock(&g_path_lock);
+    sdk_unmounts++; sdk_cache_mounted = 0;
+}
+static void *sdk_symbol(const char *name) {
+    if (!strcmp(name, "_ZN2nn2fs9IsMountedEPKc")) return (void *)sdk_is_mounted;
+    if (!strcmp(name, "_ZN2nn2fs7UnmountEPKc")) return (void *)sdk_unmount;
+    return NULL;
+}
+static int sdk_mounts_with_users(void) {
+    CHECK(dm_users()->configured && h_fs_MountSave("user-save", bob) == RES_OK);
+    CHECK(mount("host-temp", "host-temp", 0) == RES_OK);
+    t_guest_sym = sdk_symbol; sdk_cache_mounted = 1;
+    h_fs_Unmount("user-save");
+    CHECK(!h_fs_IsMounted("user-save") && !sdk_queries && !sdk_unmounts);
+    h_fs_Unmount("host-temp");
+    CHECK(h_fs_IsMounted("host-temp") && !sdk_queries && !sdk_unmounts);
+    h_fs_Unmount("cache");
+    CHECK(sdk_queries == 1 && sdk_unmounts == 1 && !sdk_cache_mounted && sdk_host_lock_free);
+    h_fs_Unmount("cache"); h_fs_Unmount(NULL); h_fs_Unmount("");
+    CHECK(sdk_queries == 2 && sdk_unmounts == 1 && sdk_host_lock_free);
+    t_guest_sym = NULL;
+    return 0;
+}
 static int legacy(void) {
     unsetenv("DM_USERS_FILE"); unsetenv("DM_USER_ID");
     CHECK(h_fs_MountSave("save", NULL) == RES_OK && guest_has("save:/slot", "alice"));
@@ -243,6 +279,7 @@ int main(void) {
     CHECK(session(read_only_fallback));
     CHECK(session(reopen));
     CHECK(session(device_only));
+    CHECK(session(sdk_mounts_with_users));
     CHECK(session(legacy));
     CHECK(session(launcher_recovery));
     // The Mac launcher checks for an unsent save after the host exits.
