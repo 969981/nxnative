@@ -458,6 +458,19 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Fix:** `fb_prepare` in `nvn_mtl.m`, for every game: when the sampled view's levels include the attachment's level and start below it, the draw samples a view of the same texture limited to the levels below the attachment (same base, so the shader's level numbers keep their meaning). A pass rendering the view's base level while sampling higher ones, and layer passes, are still left as they are.
 - **Found on:** [Donkey Kong Bananza](../../dm/games/040074A01BF12000/README.md#rendering): its environment cube (128×128, 8 levels, R11G11B10F, levels 1–7 drawn by `d1a506c1a94ffdfa` and `89dfaeb53f85920a`) got NaN texels; copied into the sources of the prefiltered cube (`62dc9b15931e0290`) and fed back through reflections and the cube capture every frame, they reached 59,592 NaN pixels of the first gameplay frame's scene (0 with the fix).
 
+### Feedback snapshot allocation churn
+
+- **Symptom:** the submit thread repeatedly creates and retires private feedback textures even though the bounded cache already contains stale allocations of the required format and dimensions.
+- **Cause:** round-robin replacement follows image identity, not allocation shape. A mixed full-size, quarter-size and sRGB working set can select an incompatible slot while another slot holds a reusable allocation.
+- **Fix:** `fb_snap` still checks the exact image/level/layer key first and keeps contents valid only within the same game barrier and submission. On a key miss it prefers a stale allocation with matching format and dimensions before falling back to round-robin replacement. Only accepted snapshot substitutions are pinned for the current draw, including valid hits, so a later attachment cannot overwrite an earlier attachment's snapshot after a shape-based jump, and failed view creation cannot exhaust the unpinned slots. The cache stays at eight entries; a stale allocation still receives its required copy. No game-specific policy or new runtime switch. The upstream depth/stencil read-before-write pass split remains unchanged.
+- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_feedback` includes mixed-format/size pressure beyond cache capacity, barriers and unwaited submissions, swizzled/sRGB pixel readback, and a four-attachment draw whose original images are overwritten before the weighted readback. Run with each `DM_NVN_ENC_THREAD=0/1` and `DM_NVN_BARRIER=full/game` combination and Metal validation.
+- **Found on:** [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md), the stationary cave save on an M2 Pro, macOS 27.2, shader chain `b3ca4b7c621f`. Same-binary unprofiled comparisons used the fully contained 90–135 second warm intervals; the table is submit-thread CPU time, not total frame time or an FPS percentage. TOTK had two runs per variant; BOTW had one uncapped outdoor pair. FPS did not improve consistently in TOTK and stayed essentially flat in BOTW.
+
+| Submit-thread CPU, ms/frame | Round-robin | Stale-shape reuse |
+| --- | ---: | ---: |
+| TOTK cave | 3.323 | 2.523 |
+| BOTW outdoors | 5.775 | 5.761 |
+
 ### Lower-left window origin
 
 - **Symptom:** text a game renders into textures for the title and the menus comes out upside down, while the scene looks right.
