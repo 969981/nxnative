@@ -35,6 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dm/tools"))
 import romfs as rfs
 import nso   # the code module loader: nso.Error is a damaged module (its file cut short or not what its header says)
+import rewrite_jobs
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pack_dump   # a folder of a game's files instead of NSPs
 
@@ -1228,21 +1229,26 @@ def rewrite(py, repo, exe_dir, out, env, logs, g, provisional=False):
     # the repository profile's build rows decide which builds the rewriter treats as the game's own (SDK-wide function patches skip those), so they are an input too
     try: own = [l for l in (repo / 'dm/games' / Path(env.get('DM_GAME') or '-').name / 'game.tsv').read_text(encoding='utf-8').splitlines() if l.startswith('build\t')]
     except OSError: own = []
-    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso.py', 'nso_code.py', 'nso_asm.py', 'nso_match.py', 'ue_cvar.py', 'ue_malloc.py', 'ue_region.py', 'loader_census.py')] + patch_files(repo, exe_dir, mods, env.get('DM_GAME')) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
+    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso.py', 'nso_code.py', 'nso_asm.py', 'nso_match.py', 'rewrite_jobs.py', 'ue_cvar.py', 'ue_malloc.py', 'ue_region.py', 'loader_census.py')] + patch_files(repo, exe_dir, mods, env.get('DM_GAME')) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
                       {k: env.get(k) for k in ('DM_PATCH_FRONT', 'DM_GAME')}, own)
     if all((out / f'{m}.patched.bin').is_file() for m in names) and reused(kf, key) is not None:
         PROG.end(f'{", ".join(mods)}{f" and {len(nros)} NROs" if nros else ""}, reused (inputs unchanged)'); return g
     tmp = out.with_name(out.name + '.partial'); rmtree(tmp); tmp.mkdir(parents=True); logs.mkdir(parents=True, exist_ok=True)
     if manifest.is_file(): shutil.copyfile(manifest, tmp / 'nro.tsv')   # refused-only manifests preserve the game's offline registration path too
     PROG.set(step=', '.join(mods) + (f' and {len(nros)} NROs' if nros else ''), done=0, total=len(names), unit='modules')
-    procs, logf, todo, cores = {}, {}, list(names), max(2, os.cpu_count() or 4)
-    jobs = max(1, min(cores, 2 * cores // max(1, len(names))))   # patch_nso.py workers per module, so parallel rewrites don't oversubscribe
-    rewrite_env = dict(env, DM_REWRITE_J=str(workers if workers is not None else jobs))
+    sizes = {name: rewrite_jobs.text_size(path) for name, path in src.items()}
+    procs, logf, todo, cores = {}, {}, sorted(names, key=lambda n: -sizes[n]), max(1, os.cpu_count() or 4)
+    budget = rewrite_jobs.Budget(tmp / '.workers', sizes, cores) if workers is None else None
+    rewrite_env = dict(env, DM_REWRITE_J=str(workers if workers is not None else cores))
+    rewrite_env.pop('DM_REWRITE_BUDGET', None)
     try:
         while todo or procs:
-            while todo and len(procs) < cores:
-                m = todo.pop(0); logf[m] = open(logs / f'rewrite_{m}.log', 'w')
-                procs[m] = subprocess.Popen([str(py), str(repo / 'dm/tools/patch_nso.py'), str(src[m]), str(tmp), m], env=rewrite_env, stdout=logf[m], stderr=subprocess.STDOUT)
+            starting, todo = todo[:cores - len(procs)], todo[cores - len(procs):]
+            if budget: budget.update([*procs, *starting])
+            for m in starting:
+                logf[m] = open(logs / f'rewrite_{m}.log', 'w')
+                module_env = dict(rewrite_env, DM_REWRITE_BUDGET=str(budget.directory / m)) if budget else rewrite_env
+                procs[m] = subprocess.Popen([str(py), str(repo / 'dm/tools/patch_nso.py'), str(src[m]), str(tmp), m], env=module_env, stdout=logf[m], stderr=subprocess.STDOUT)
             for m in [m for m in procs if procs[m].poll() is not None]:
                 p = procs.pop(m); logf[m].close(); PROG.set(done=len(names) - len(todo) - len(procs))
                 if p.returncode:
@@ -1255,6 +1261,7 @@ def rewrite(py, repo, exe_dir, out, env, logs, g, provisional=False):
         for p in procs.values():
             if p.poll() is None: p.terminate(); p.wait()
         for f in logf.values(): f.close()
+        if budget: rmtree(budget.directory)
     rmtree(kf); swap_in(tmp, out); kf.write_text(f'{key}\n')
     PROG.end(', '.join(mods) + (f' and {len(nros)} NROs' if nros else ''))
     return g
@@ -1884,8 +1891,8 @@ def shader_keys(g):   # the base shaders dmsh_build.py builds, shared by progres
 class ShaderWatch:
     """Progress of dmsh_build.py, read from the files it writes (it prints nothing until it ends). It works in three phases:
     the cache check (a hit restores <key>_b.json into the library directory b-<chain>/: the iOS one, or the Mac's for a Mac-only build; a miss writes <key>.bin into its temporary folder dmsh_* under WORK),
-    the translation of the misses (<key>.spv in the temporary folder), and the compile, which takes the keys in a fixed order (sorted, the vertex shaders with pixel pairs last)
-    and writes <key>_b.json again for every miss and every pixel shader: the furthest key written so far tells how far it got"""
+    translation of the misses (<key>.spv in the temporary folder), and compilation, which can overlap translation and finish keys out of order.
+    Count published <key>_b.json files; a high-sorting vertex can finish before many unrelated shaders."""
     def __init__(self, g, out, tmp, pso_pairs=None):   # out: the library directory b-<chain>/ (the iOS one, or the Mac's for a Mac-only build)
         keys = shader_keys(g)
         pairs = set()
@@ -1895,7 +1902,7 @@ class ShaderWatch:
         order = sorted(keys - pairs) + sorted(keys & pairs)
         self.pos, self.n = {k: i for i, k in enumerate(order)}, len(order)
         self.out, self.tmp, self.t0, self.t1, self.w = out, tmp, time.time(), None, None
-        self.hits, self.fin, self.top = set(), set(), -1
+        self.hits, self.fin = set(), set()
 
     def written(self, keys, since):   # those of keys whose <key>_b.json in the output was written after since
         found = set()
@@ -1918,9 +1925,8 @@ class ShaderWatch:
             self.t1 = time.time()   # the cache check is over: from now on a <key>_b.json is written by the compile
         if ext['.bin'] and not ext['.metal'] and ext['.spv'] < ext['.bin']:
             return {'step': 'translating', 'done': ext['.spv'], 'total': ext['.bin'], 'unit': 'shaders'}
-        new = self.written(self.pos.keys() - self.fin, self.t1)
-        self.fin |= new; self.top = max([self.top] + [self.pos[k] for k in new])
-        return {'step': 'compiling' if ext['.bin'] else 'finishing', 'done': max(len(self.fin), self.top + 1), 'total': self.n, 'unit': 'shaders',
+        self.fin |= self.written(self.pos.keys() - self.fin, self.t0 - 2)
+        return {'step': 'compiling' if ext['.bin'] else 'finishing', 'done': len(self.fin), 'total': self.n, 'unit': 'shaders',
                 'note': f'{ext[".bin"]:,} not cached' if ext['.bin'] else ''}
 
 
@@ -2079,39 +2085,36 @@ def shader_regressions(py, repo, lib_dir, chain, logs):
 
 
 def layer_shaders(py, repo, api, name, roots, sh, key, logs, env, mac):
-    """What build_vk_shaders and build_gl_shaders share: dm/gfx/tools/<api>_shaders.py on the roots → sh/<api>/ for the Mac and, unless mac (a Mac-only build), sh/ios/<api>/ for the iPhone.
-    Returns the folder the host (DM_MSL_DIR) or build_ipa.sh (MSL_IOS) takes the libraries from. key: the inputs' fingerprint (None never reuses). The iOS libraries' key is sh/ios/<api>.key,
-    the Mac's sh/<api>.key, which an iOS build writes too (it builds both), so a Mac-only build is reused after either; an iOS build after a Mac-only one translates again.
-    Otherwise the old output is deleted first, so a failed run leaves nothing for build_ipa.sh or the host to pick up; the translator's temporary files go to WORK (on the NSP folder's volume)"""
+    """Build only the requested target. Each platform owns its output and reuse key, so switching platforms cannot
+    reuse another target's stale library or delete its working build. The tools' direct --ios default still builds both."""
     ios = sh / 'ios'; out = sh if mac else ios
-    kf, kmac, lib, log = ios / f'{api}.key', sh / f'{api}.key', out / api / f'{api}_shaders.metallib', logs / f'{api}_shaders.log'
-    note = next((n for k in ((kmac, kf) if mac else (kf,)) if (n := reused(k, key)) is not None), None) if key else None
+    kf, lib, log = out / f'{api}.key', out / api / f'{api}_shaders.metallib', logs / f'{api}_shaders.log'
+    note = reused(kf, key) if key else None
     if lib.is_file() and note is not None:
         PROG.end(f'{note}, reused (inputs unchanged)'); return out
     PROG.set(step='translating')
-    rmtree(kmac); rmtree(sh / api)
-    if not mac: rmtree(kf); rmtree(ios / api)
-    run([py, repo / f'dm/gfx/tools/{api}_shaders.py', *roots, sh] + ([] if mac else ['--ios', ios]), log, env=dict(env, TMPDIR=env['WORK']))
+    rmtree(kf); rmtree(out / api)
+    run([py, repo / f'dm/gfx/tools/{api}_shaders.py', *roots, sh] + ([] if mac else ['--ios', ios]) + ['--targets', 'mac' if mac else 'ios'],
+        log, env=dict(env, TMPDIR=env['WORK']))
     if not lib.is_file(): raise BuildError(f'no {"Mac" if mac else "iOS"} {name} shader library in {lib.parent}')
     m = re.search(r'macosx: (\d+)' if mac else r'iphoneos: (\d+)', log.read_text(errors='replace'))
-    note = f'{int(m.group(1)):,} shaders for the Mac' + ('' if mac else ' and iOS') if m else ''
-    if key:
-        for k in (kmac,) if mac else (kf, kmac): k.write_text(f'{key}\n{note}\n')
+    note = f'{int(m.group(1)):,} shaders for {"the Mac" if mac else "iOS"}' if m else ''
+    if key: kf.write_text(f'{key}\n{note}\n')
     PROG.end(note)
     return out
 
 
 def build_vk_shaders(py, repo, roots, sh, env, logs, g, reuse=True, mac=False, provisional=False):
-    """A Vulkan game's SPIR-V shaders (roots: the RomFS, and a run-time capture folder) → one Metal library each for the Mac (sh/vk/) and the iPhone (sh/ios/vk/, what build_ipa.sh takes from MSL_IOS;
-    not with mac), replacing the NVN split and chain build (layer_shaders). Reused when the roots (paths and sizes), the tools, the profile and the compilers are as at the last successful run (reuse False: never)"""
+    """A Vulkan game's SPIR-V shaders (roots: the RomFS, and a run-time capture folder) → one Metal library for the selected target (Mac: sh/vk/; iPhone: sh/ios/vk/, what build_ipa.sh takes from MSL_IOS),
+    replacing the NVN split and chain build (layer_shaders). Reused when the roots (paths and sizes), the tools, the profile and the compilers are as at the last successful run (reuse False: never)"""
     PROG.stage('Vulkan shaders', step='checking the inputs')
     key = fingerprint(*[('stat' if provisional else 'tree', r) for r in roots], ('files', tool_files(repo)), ('files', profile_files(g)), *toolchain(repo, env), env=env) if reuse else None
     return layer_shaders(py, repo, 'vk', 'Vulkan', roots, sh, key, logs, env, mac)
 
 
 def build_gl_shaders(py, repo, roots, sh, env, logs, g, reuse=True, mac=False, provisional=False):
-    """An OpenGL game's GLSL sources (roots: the RomFS, main, a run-time capture folder) → one Metal library each for the Mac (sh/gl/) and the iPhone (sh/ios/gl/, what build_ipa.sh takes from MSL_IOS;
-    not with mac), replacing the NVN split and chain build, as build_vk_shaders does for a Vulkan game; glslang (glslangValidator) compiles the GLSL to SPIR-V for spirv-cross"""
+    """An OpenGL game's GLSL sources (roots: the RomFS, main, a run-time capture folder) → one Metal library for the selected target (Mac: sh/gl/; iPhone: sh/ios/gl/, what build_ipa.sh takes from MSL_IOS),
+    replacing the NVN split and chain build, as build_vk_shaders does for a Vulkan game; glslang (glslangValidator) compiles the GLSL to SPIR-V for spirv-cross"""
     PROG.stage('GL shaders', step='checking the inputs')
     if not shutil.which('glslangValidator', path=env['PATH']): raise BuildError('glslangValidator not found (brew install glslang): it compiles an OpenGL game\'s GLSL shaders')
     key = fingerprint(*[('stat' if provisional else 'tree', r) if Path(r).is_dir() else ('files', [r]) for r in roots], ('files', tool_files(repo)), ('files', profile_files(g)), *toolchain(repo, env),

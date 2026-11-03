@@ -75,6 +75,7 @@ dm/gfx/tools/dmsh_facts.py	shader:stage:*	the translator's answer table
 dm/gfx/tools/dmsh_chain.*	shader:stage:*	the chain version: every NVN game's libraries are rebuilt
 dm/gfx/tools/dmsh_abi.py	shader:stage:*	the reader of the shader library ABI: every NVN game's libraries
 dm/gfx/tools/dmsh_mtlcache.py	shader:stage:*	the Metal compile cache
+dm/gfx/tools/dmsh_schedule.py	shader:stage:*	translation and dependency-ready compilation scheduling
 dm/gfx/tools/own_compilers.py	shader:stage:*	the tested-compiler build guard
 dm/gfx/tools/tool_lock.py	shader:stage:*	the tool lock check every NVN shader build runs first (not part of the chain version)
 dm/gfx/tools/dmsh_dryrun.py	shader:stage:*	the standalone shader conversion check
@@ -96,6 +97,7 @@ dm/gfx/tools/cb_extent.py	shader:stage:*	the uniform read extents
 dm/gfx/tools/shader_split.py	shader:stage:*	the shader tables (after a split)
 dm/gfx/tools/unityfs.py	shader:stage:*	the Unity serialized shader reader (after a split)
 dm/tools/patch_nso.py	*:*	the rewriter: every game's code
+dm/tools/rewrite_jobs.py	*:*	CPU allocation across rewritten code modules
 dm/tools/nso_*.py	*:*	the rewriter: every game's code
 dm/tools/sdk_patches.py	*:*	the SDK modules' patches (by build ID)
 dm/tools/romfs_image.py	*:*	RomFS image packing: every game's files

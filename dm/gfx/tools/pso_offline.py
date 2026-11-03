@@ -27,6 +27,7 @@
 #   A device opens only an archive of its own major version (macOS 27.2 refused archives made for 26.0 and 26.6 and opened those for 27.0 and 27.2), and builds the bases itself
 #   otherwise: the SDK's version on a Mac whose system is older than its Xcode's SDK (macOS 26.6 with Xcode 27.1) left that Mac without them (GitHub issue #673)
 import argparse, hashlib, json, os, shutil, struct, subprocess, sys, time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 LAYER = b'render_target_array_index'
@@ -63,6 +64,10 @@ def functions(path):
     """{entry name: declares function constants} of a .metallib, from its header: the function list (NAME tags) and each function's public metadata (a CNST tag lists its constants).
     Raises ValueError on a file it cannot read"""
     with open(path, 'rb') as f: b = f.read(1 << 20)
+    return function_bytes(b, path)
+
+
+def function_bytes(b, path):
     if b[:4] != b'MTLB' or len(b) < 0x58: raise ValueError(f'{path}: not a Metal library')
     fo, _, po, ps = struct.unpack_from('<QQQQ', b, 0x18)
     def tags(p, end):
@@ -84,22 +89,49 @@ def functions(path):
     return dict(zip(names, consts))
 
 
-def plan(lib_dir, chain, pairs, zero):
+class Inputs:
+    """One read per unique input; retain small metadata/digests, not the library bytes."""
+    def __init__(self, directory, workers=None):
+        self.directory = Path(directory)
+        self.workers = min(8, os.cpu_count() or 1) if workers is None else workers
+        if self.workers < 1: raise ValueError('PSO preparation workers must be positive')
+        self.reflections, self.libraries = {}, {}
+
+    def reflection(self, key):
+        try: value = json.loads((self.directory / f'{key}_b.json').read_bytes())
+        except (OSError, ValueError): value = None
+        return key, value
+
+    def library(self, name):
+        path = self.directory / f'{name}.metallib'
+        try:
+            data = path.read_bytes()
+            value = (function_bytes(data[:1 << 20], path), LAYER in data, hashlib.sha256(data).digest())
+        except (OSError, ValueError): value = (None, False, None)
+        return name, value
+
+    def prepare(self, pairs, chain):
+        with ThreadPoolExecutor(self.workers) as pool:
+            keys = sorted({k for pair in pairs for k in pair} - self.reflections.keys())
+            self.reflections.update(pool.map(self.reflection, keys))
+            names = set()
+            for vk, fk in pairs:
+                vj, fj = self.reflections[vk], self.reflections[fk]
+                if not vj or not fj or vj.get('chain') != chain or fj.get('chain') != chain: continue
+                pull = isinstance(vj.get('pull'), dict)
+                if not pull and vj.get('vertex_inputs'): continue
+                if (fj.get('raster') or {}).get('primitive_id'): continue
+                names.update((vk + ('_bp' if pull else '_b'), fk + '_b'))
+            self.libraries.update(pool.map(self.library, sorted(names - self.libraries.keys())))
+
+
+def plan(lib_dir, chain, pairs, zero, inputs=None):
     """The bases the archive holds: [(vertex library, vertex entry, pixel library, pixel entry)], the pairs left to the device (function constants), and counts of the pairs left out"""
-    lib_dir = Path(lib_dir); js, fns, layer = {}, {}, {}
-    def refl(key):
-        if key not in js:
-            try: js[key] = json.loads((lib_dir / f'{key}_b.json').read_bytes())
-            except (OSError, ValueError): js[key] = None
-        return js[key]
-    def fn(lib):
-        if lib not in fns:
-            try: fns[lib] = functions(lib_dir / f'{lib}.metallib')
-            except (OSError, ValueError): fns[lib] = None
-        return fns[lib]
-    def writes_layer(lib):
-        if lib not in layer: layer[lib] = LAYER in (lib_dir / f'{lib}.metallib').read_bytes()
-        return layer[lib]
+    inputs = inputs or Inputs(lib_dir)
+    pairs = list(pairs); inputs.prepare(pairs, chain)
+    def refl(key): return inputs.reflections[key]
+    def fn(lib): return inputs.libraries[lib][0]
+    def writes_layer(lib): return inputs.libraries[lib][1]
     bases, rest, seen, left = [], [], set(), dict.fromkeys(('reflection', 'stage inputs', 'library', 'layer', 'primitive ID', 'entry'), 0)
     for vk, fk in pairs:
         vj, fj = refl(vk), refl(fk)
@@ -134,11 +166,13 @@ def script(lib_dir, bases):
             'pipeline_descriptors': {'render_pipeline_descriptors': pipes}}
 
 
-def library_digest(lib_dir, bases):
+def library_digest(lib_dir, bases, inputs=None):
     """The bytes metal-tt consumes: a profile/chain stamp does not change when the same shaders are rebuilt by another Metal compiler."""
     h = hashlib.sha256()
     for name in sorted({lib for vl, _, fl, _ in bases for lib in (vl, fl)}):
         h.update(name.encode() + b'\0')
+        if inputs is not None:
+            h.update(inputs.libraries[name][2]); continue
         lib = hashlib.sha256()
         with open(Path(lib_dir) / f'{name}.metallib', 'rb') as f:
             while chunk := f.read(1 << 20): lib.update(chunk)
@@ -198,6 +232,7 @@ def main(argv=None):
     ap.add_argument('--platform', choices=('ios', 'macos'), default='ios')
     ap.add_argument('--os-min', help='minimum OS of the archives (default: iOS, the SDK\'s major version; macOS, this Mac\'s)')
     ap.add_argument('--script-only', action='store_true', help='write the script and the stamp, run no metal-tt')
+    ap.add_argument('--jobs', type=int, default=None, help='parallel input readers (default: up to 8 CPU cores)')
     a = ap.parse_args(argv)
     if a.game:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'games')); import game
@@ -216,7 +251,8 @@ def main(argv=None):
     zero = a.depth == 'zero'
     t0 = time.time()
     pairs = read_pairs(text)
-    bases, rest, left = plan(lib_dir, chain, pairs, zero)
+    prepared = Inputs(lib_dir, a.jobs)
+    bases, rest, left = plan(lib_dir, chain, pairs, zero, inputs=prepared)
     work.mkdir(parents=True, exist_ok=True); out.mkdir(parents=True, exist_ok=True)
     js = work / 'bases.mtl4-json'   # metal-tt takes the format from the extension: .mtl4-json is Metal 4's (.mtlp-json is the Metal 3 format)
     configuration = script(lib_dir, bases)
@@ -230,7 +266,7 @@ def main(argv=None):
     if not pairs: print('pso_offline: no pairs (only a header): nothing to build, no archive')   # a profile whose split found no pair (GitHub issue #338)
     if not bases: archs = []   # no pair, or every eligible pair needs device specialization; clear old archives and still write the stamp and the remainder list
     osmin = a.os_min or os_min_default(a.platform); tv = tool_version(a.platform) if bases else 'not used (function constants only)'
-    libraries = library_digest(lib_dir, bases)
+    libraries = library_digest(lib_dir, bases, inputs=prepared)
     for arch in archs:
         key = archive_key(configuration, libraries, arch, a.platform, osmin, tv)
         dst, kf = out / f'{arch}.mtl4a', work / f'key.{arch}'
