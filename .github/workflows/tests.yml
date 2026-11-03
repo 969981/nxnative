@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: tests-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   # The toolchain the project supports (README: Xcode 27.2; dm/gfx/tools/dmsh_chain.lock: its Metal compiler), on GitHub's xcode-27 image (macOS 27, a preview image),
@@ -28,10 +28,15 @@ defaults:
     shell: bash
 
 # Actions are pinned to commit SHAs (the tag in the comment): a tag can be moved, a SHA cannot. Dependabot (github-actions) can raise them.
+# Across PRs, only one Mac job per group runs at a time. C lint shares pr-mac-analysis.
+# Main and manual runs give each job its own group so all their jobs can start as runners become available.
 jobs:
   host-tests:
     name: Host unit tests and CPU-only gfx tests
     runs-on: xcode-27
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'pr-mac-tests' || format('host-tests-{0}', github.run_id) }}
+      queue: max
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,6 +87,9 @@ jobs:
   sanitizers:
     name: Sanitizers (ASan, UBSan and TSan over the host and CPU texture tests)
     runs-on: xcode-27
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'pr-mac-tests' || format('sanitizers-{0}', github.run_id) }}
+      queue: max
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -108,6 +116,9 @@ jobs:
   coverage:
     name: Coverage (host, CPU texture and tool tests; report only)
     runs-on: xcode-27
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'pr-mac-analysis' || format('coverage-{0}', github.run_id) }}
+      queue: max
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,6 +175,9 @@ jobs:
   tool-tests:
     name: Tool tests
     runs-on: xcode-27
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'pr-mac-tests' || format('tool-tests-{0}', github.run_id) }}
+      queue: max
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -211,6 +225,9 @@ jobs:
   build:
     name: Build check (Mac host, gfx tests, iOS sources)
     runs-on: xcode-27
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'pr-mac-builds' || format('build-{0}', github.run_id) }}
+      queue: max
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -252,6 +269,9 @@ jobs:
   ios-build:
     name: Unsigned iOS app (synthetic modules, Swift and link)
     runs-on: xcode-27
+    concurrency:
+      group: ${{ github.event_name == 'pull_request' && 'pr-mac-builds' || format('ios-build-{0}', github.run_id) }}
+      queue: max
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
