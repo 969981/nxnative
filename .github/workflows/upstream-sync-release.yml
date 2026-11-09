@@ -75,11 +75,15 @@ jobs:
               exit 1
             }
           fi
+          # The one allowed local source overlay must exactly match the previous upstream.
+          python3 .github/workflows/fork-patches/apply_narc_rejection.py verify "$baseline" "$before"
           if ! git diff --quiet "$baseline" "$before" -- . \
-              ':(exclude).github/workflows' ':(exclude).nxnative-upstream-sha'; then
+              ':(exclude).github/workflows' ':(exclude).nxnative-upstream-sha' \
+              ':(exclude)dm/gfx/tools/shader_split.py'; then
             echo "::error::Detected local modifications outside CI; refusing to overwrite them."
             git diff --name-only "$baseline" "$before" -- . \
-              ':(exclude).github/workflows' ':(exclude).nxnative-upstream-sha'
+              ':(exclude).github/workflows' ':(exclude).nxnative-upstream-sha' \
+              ':(exclude)dm/gfx/tools/shader_split.py'
             exit 1
           fi
 
@@ -87,6 +91,9 @@ jobs:
           # GITHUB_TOKEN cannot write modified workflow files to the remote.
           git read-tree --reset "$upstream^{tree}"
           git restore --source="$before" --staged -- .github/workflows
+          # Reapply the narrow, checked fork fix to the new upstream source.
+          python3 .github/workflows/fork-patches/apply_narc_rejection.py apply "$upstream"
+          git add dm/gfx/tools/shader_split.py
           printf '%s\n' "$upstream" > .nxnative-upstream-sha
           git add .nxnative-upstream-sha
           new_tree="$(git write-tree)"

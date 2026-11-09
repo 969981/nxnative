@@ -2744,7 +2744,11 @@ def scan_blob(d, label, out, depth=0, left=None):
         return
     if d[:4] == b'NARC':   # Camelot's containers (cra.py): each member packed by its first byte, so its size says nothing about the budget above
         import cra
-        for i, m in enumerate(cra.narc_members(d, label)): scan_blob(cra.undo(m), f'{label}/{i}', out, depth + 1)
+        try:
+            members = cra.narc_members(d, label)
+            for i, m in enumerate(members): scan_blob(cra.undo(m), f'{label}/{i}', out, depth + 1)
+        except cra.Error as e:
+            red(str(e))   # malformed NARC is an explicit format rejection, not an undeclared exception
         return
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
     if d[:4] == b'NDSR': out.extend(ndsr_shaders(d, label)); return
