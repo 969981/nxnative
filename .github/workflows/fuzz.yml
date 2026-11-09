@@ -55,12 +55,13 @@ jobs:
           sys.path.insert(0, 'dm/gfx/tools')
           sys.path.insert(0, 'dm/tools')
           import shader_split
-          try:
-              shader_split.scan_blob(b'NARC' + bytes(12), '/fuzz', [])
-          except SystemExit as error:
-              assert str(error) == '[RED] /fuzz: no BTAF or GMIF', error
-          else:
-              raise AssertionError('Malformed NARC was not rejected')
+          for data in (b'NARC' + bytes(8), b'NARC' + bytes(12)):
+              try:
+                  shader_split.scan_blob(data, '/fuzz', [])
+              except SystemExit as error:
+                  assert str(error).startswith('[RED] /fuzz: '), error
+              else:
+                  raise AssertionError('Malformed NARC was not rejected')
           print('Malformed NARC rejected with a declared [RED] error')
           PY
       - name: Run each harness

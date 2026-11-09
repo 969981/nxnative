@@ -174,16 +174,25 @@ def head(f, entry):   # the first block of a file, unscrambled: its magic, to le
 
 def narc_members(d, where='NARC'):
     if d[:4] != b'NARC': raise Error(f'{where}: not a NARC')
+    if len(d) < 16: raise Error(f'{where}: truncated NARC header')
     o, n = struct.unpack_from('<HH', d, 0xc); secs = {}
+    if o < 16 or o > len(d): raise Error(f'{where}: invalid section table offset')
     for _ in range(n):
         if o + 8 > len(d): raise Error(f'{where}: a section past the end')
-        s = struct.unpack_from('<I', d, o + 4)[0]; secs[d[o:o + 4]] = o; o += s
+        s = struct.unpack_from('<I', d, o + 4)[0]
+        if s < 8 or s > len(d) - o: raise Error(f'{where}: invalid section size')
+        secs[d[o:o + 4]] = (o, s); o += s
     if b'BTAF' not in secs or b'GMIF' not in secs: raise Error(f'{where}: no BTAF or GMIF')
-    fat = secs[b'BTAF']; data = secs[b'GMIF'] + 8
+    fat, fat_size = secs[b'BTAF']
+    gmif, gmif_size = secs[b'GMIF']
+    if fat_size < 12: raise Error(f'{where}: truncated BTAF section')
+    count = struct.unpack_from('<I', d, fat + 8)[0]
+    if count > (fat_size - 12) // 8: raise Error(f'{where}: BTAF member table exceeds its section')
+    data, data_end = gmif + 8, gmif + gmif_size
     out = []
-    for i in range(struct.unpack_from('<I', d, fat + 8)[0]):
+    for i in range(count):
         a, b = struct.unpack_from('<II', d, fat + 12 + 8 * i)
-        if not data + a <= data + b <= len(d): raise Error(f'{where}: member {i} past the end')
+        if not 0 <= a <= b <= data_end - data: raise Error(f'{where}: member {i} past the end')
         out.append(d[data + a:data + b])
     return out
 

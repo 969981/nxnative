@@ -22,6 +22,12 @@ PATCHES = {
 """,
         ),
     ),
+    "dm/gfx/tools/cra.py": (
+        (
+            "def narc_members(d, where='NARC'):\n    if d[:4] != b'NARC': raise Error(f'{where}: not a NARC')\n    o, n = struct.unpack_from('<HH', d, 0xc); secs = {}\n    for _ in range(n):\n        if o + 8 > len(d): raise Error(f'{where}: a section past the end')\n        s = struct.unpack_from('<I', d, o + 4)[0]; secs[d[o:o + 4]] = o; o += s\n    if b'BTAF' not in secs or b'GMIF' not in secs: raise Error(f'{where}: no BTAF or GMIF')\n    fat = secs[b'BTAF']; data = secs[b'GMIF'] + 8\n    out = []\n    for i in range(struct.unpack_from('<I', d, fat + 8)[0]):\n        a, b = struct.unpack_from('<II', d, fat + 12 + 8 * i)\n        if not data + a <= data + b <= len(d): raise Error(f'{where}: member {i} past the end')\n        out.append(d[data + a:data + b])\n    return out\n",
+            "def narc_members(d, where='NARC'):\n    if d[:4] != b'NARC': raise Error(f'{where}: not a NARC')\n    if len(d) < 16: raise Error(f'{where}: truncated NARC header')\n    o, n = struct.unpack_from('<HH', d, 0xc); secs = {}\n    if o < 16 or o > len(d): raise Error(f'{where}: invalid section table offset')\n    for _ in range(n):\n        if o + 8 > len(d): raise Error(f'{where}: a section past the end')\n        s = struct.unpack_from('<I', d, o + 4)[0]\n        if s < 8 or s > len(d) - o: raise Error(f'{where}: invalid section size')\n        secs[d[o:o + 4]] = (o, s); o += s\n    if b'BTAF' not in secs or b'GMIF' not in secs: raise Error(f'{where}: no BTAF or GMIF')\n    fat, fat_size = secs[b'BTAF']\n    gmif, gmif_size = secs[b'GMIF']\n    if fat_size < 12: raise Error(f'{where}: truncated BTAF section')\n    count = struct.unpack_from('<I', d, fat + 8)[0]\n    if count > (fat_size - 12) // 8: raise Error(f'{where}: BTAF member table exceeds its section')\n    data, data_end = gmif + 8, gmif + gmif_size\n    out = []\n    for i in range(count):\n        a, b = struct.unpack_from('<II', d, fat + 12 + 8 * i)\n        if not 0 <= a <= b <= data_end - data: raise Error(f'{where}: member {i} past the end')\n        out.append(d[data + a:data + b])\n    return out\n",
+        ),
+    ),
     "dm/ios/tools/gen_build.py": (
         (
             """#                     OTHER_CFLAGS (-D), frameworks (Cocoa is replaced by what the UIKit side already has, skipped)""",
