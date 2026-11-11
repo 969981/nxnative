@@ -46,6 +46,19 @@ def source(ref, path):
 
 
 def overlay(path, data):
+    if path == "dm/ios/tools/gen_build.py":
+        # Upstream now queries the actual iOS SDK and excludes every framework
+        # absent from it. That supersedes our old hard-coded macOS-only list.
+        # Accept only the complete verified upstream implementation, not a
+        # partial rewrite that could reintroduce Cocoa/IOKit link failures.
+        sdk_markers = (
+            b"['xcrun', '--sdk', 'iphoneos', '--show-sdk-path']",
+            b"mac_only = [f for f in fws if not os.path.isdir(",
+            b"if f not in mac_only",
+            b"if mac_only: print('gen_build: not in the iOS SDK",
+        )
+        if all(marker in data for marker in sdk_markers):
+            return data
     for old_text, new_text in PATCHES[path]:
         old, new = old_text.encode(), new_text.encode()
         if data.count(old) == 1:
