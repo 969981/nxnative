@@ -367,8 +367,8 @@ def glslc_program(d, h, size, label):
     return [(f'{label}#GLSLC@{h:#x}#var', st, ctl, code) for st, (ctl, code) in zip(sts, secs)]
 
 def glslc_shaders(d, label, need=True, skip=()):
-    """GLSLC compiler outputs (838 in 13 Sentinels' main read-only segment, one stage each): from the magic 0x19866891, +0x44 = the whole output's length; an output of one stage holds exactly one control section with the code area right after it (control +0x20 = control length),
-    one of several stages is read by its section headers (glslc_program).
+    """GLSLC compiler outputs (838 in 13 Sentinels' main read-only segment, one stage each): from the magic 0x19866891, +0x44 = the whole output's length; an output of one stage holds exactly one control section,
+    read by its section header (glslc_section), else with the code area right after it (control +0x20 = control length); one of several stages is read by its section headers (glslc_program).
     The magic is only 4 bytes, so only outputs that pass the triple check are kept. Every game's main is searched: Unity's player has 11 of its own (Fire Emblem Engage, Ace Attorney Investigations
     Collection) beside the game's shaders in its bundles, KTGL and Vanillaware's engine compile theirs into main (13 Sentinels: 838), the others have none.
     need: stop when there is none (a capture file); a Koei Tecmo G2S container (idrk_shaders) or a main may hold none.
@@ -390,17 +390,18 @@ def glslc_shaders(d, label, need=True, skip=()):
         if c < 0: continue
         if d.find(CTL_MAGIC, c + 4, h + size) >= 0:
             out += glslc_program(d, h, size, label); continue
+        # The output's own section header says where its control section and code area are (glslc_section), and is read first. A control section can be followed by more than
+        # its +0x20 length says: SDK 21's GLSLC (Trails in the Sky 2nd Chapter's main, 1.0.4: the compute shader at main+0x7774a8) puts its NVcp5.0 assembly listing there, 0x1be48
+        # bytes from control +0x878, and the code area 0x180 bytes past its +0x20 length (section header +0x34), so the rule below took 0x180 bytes before the code area. SDK 4's
+        # GLSLC (output version 0x20.4, Dark Souls Remastered: 44 of main's 72 outputs and the pixel shaders in its archives) writes control sections whose +0x20 is 12 bytes short of
+        # their length, the same mismatch the other way
+        sec = glslc_section(d, h, size)
+        if sec and len(sec) == 1 and (st := glslc_stage(*sec[0])) and not check(label, st, *sec[0]): out.append((f'{label}#GLSLC@{h:#x}', st, *sec[0])); continue
+        # Without a usable section header: the code area right after the control section's +0x20 length
         nctl, ncode = (struct.unpack_from('<I', d, c + 0x20)[0], struct.unpack_from('<I', d, c + 0x704)[0]) if c + 0x708 <= h + size else (0, 0)   # 0: a control section the output does not hold
         ctl, code = d[c:c + nctl], d[c + nctl:c + nctl + ncode]
         st = glslc_stage(ctl, code) if nctl >= 0x760 and not nctl & 3 and c + nctl + ncode <= h + size else None
-        if not st or check(label, st, ctl, code):
-            # SDK 4's GLSLC (output version 0x20.4, Dark Souls Remastered: 44 of main's 72 outputs and the pixel shaders in its archives) writes control sections whose +0x20 is
-            # 12 bytes short of their length, so the code area is not right after it; the output's own section header says where both are (glslc_section). Only outputs the rule
-            # above rejects are read this way: on every output it keeps (1,073 in 13 Sentinels, Three Houses, FINAL FANTASY TACTICS, Engage and Age of Calamity) both give the same key
-            sec = glslc_section(d, h, size)
-            if not sec or len(sec) != 1: continue
-            (ctl, code), = sec; st = glslc_stage(ctl, code)
-            if not st or check(label, st, ctl, code): continue
+        if not st or check(label, st, ctl, code): continue
         out.append((f'{label}#GLSLC@{h:#x}', st, ctl, code))
     if not out and need: red(f'{label}: no GLSLC output')
     return out
@@ -3053,6 +3054,23 @@ def scan_blob(d, label, out, depth=0, left=None):
     if NEEDLE in d: out.extend(needle_shaders(d, label))
     if SUMO_NX in d or NVNSH in d: out.extend(sumo_shaders(d, label))
 
+def merge_keys(results):
+    """The shaders of every scanned file, one row per key: (where, stage, control, code), the pairs, and the rows per source group. A key found more than once keeps its first copy,
+    except that the game's own copy (base or update) takes the place of an add-on's (/aoc/<index>/): the game's rows are then the same with or without any DLC, so a registered build
+    packed with another DLC set changes only the DLC rows (build_ipa_from_nsp.py dlc_only_shader_change). PRAGMATA's re_dlc_000.pak holds 45 of the game's shaders, and with the DLC
+    installed the path order (aoc/ before re_chunk_000.pak) gave them to the DLC, so a profile split with it did not build without it (issue #2439)"""
+    keys, pairs, per_src = {}, set(), collections.Counter()
+    for rel, uniq, pr, _ in results:
+        pairs |= pr
+        for key, v in uniq.items():
+            if key in keys:
+                old = keys[key]
+                if not same_shader(old[2:4], v[2:4]): red(f'key {key} is the same but the control section or code area differs ({v[0]} / {old[0]})')
+                if old[0].startswith('/aoc/') and not v[0].startswith('/aoc/'): per_src[group(old[0])] -= 1; keys[key] = v; per_src[group(v[0])] += 1
+                continue
+            keys[key] = v; per_src[group(v[0])] += 1
+    return keys, pairs, per_src
+
 def group(label):
     """source group (second half of the package file name)"""
     if label.startswith('main'): return 'main'
@@ -3439,7 +3457,6 @@ def main():
         tag = 'aoc/' + (name.removesuffix('.img') if is_image(romfs) else name)
         files += sorted((os.path.join(dp, f), tag + '/' + os.path.relpath(os.path.join(dp, f), romfs)) for dp, _, fs in os.walk(romfs) for f in fs)
     zdicts = {k: v for r in romfs_v + dlc_v for k, v in zs_dicts(r).items()}   # Tears of the Kingdom's zstd dictionaries (zs_dicts)
-    keys = {}
     # First pass: every file; Unity bundles carry type trees, and the Shader trees are collected on the way. Second pass: Unity serialized files without type trees are scanned again with the borrowed trees
     J = int(os.environ.get('J', '8'))
     big = [j for p, r in files for j in (linkdata_jobs(p, r) or [])]   # Three Houses' 6.9 GB DATA1.bin: one job per range of entries, not one read of the whole file
@@ -3478,14 +3495,7 @@ def main():
         results = [r for r in results if r[3] != 'defer'] + again
     bad = [extra for *_, extra in results if isinstance(extra, tuple)]
     if bad: print(f'[RED] {sum(e[2] for e in bad)} file(s) could not be read, their shaders are left out (first: {bad[0][1]})', flush=True)   # build_ipa_from_nsp.py reads this line
-    per_src = collections.Counter(); pairs = set()
-    for rel, uniq, pr, _ in results:
-        pairs |= pr
-        for key, v in uniq.items():
-            if key in keys:
-                if not same_shader(keys[key][2:4], v[2:4]): red(f'key {key} is the same but the control section or code area differs ({v[0]} / {keys[key][0]})')
-                continue
-            keys[key] = v; per_src[group(v[0])] += 1
+    keys, pairs, per_src = merge_keys(results)
     prog = {(a, b) for a, b, *t in pairs if t} - pairs; pairs = {x for x in pairs if len(x) == 2}
     sp, cover = separable_pairs(keys); pairs |= sp
     if cover: print(f'single-stage programs: {len({v for v, _ in sp}):,} vertex shaders are paired with a cover of {len(cover)} pixel shader(s) ({" ".join(cover)})')
@@ -3517,7 +3527,7 @@ def main():
                                             ('Snowdrop shader objects', any('#SNOWDROP@' in r[4] for r in rows)),
                                             ('Unreal Engine shader code archives', any('#UE' in r[4] for r in rows))) if hit)
         f.write(f'# kind: evidence  {NOTE} ({kinds} in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)\n')
-        f.write('# column 5 records where each key first appears; no PC shader pairing supplied\n')
+        f.write('# column 5 records where each key first appears, a copy in the game before one in an add-on; no PC shader pairing supplied\n')
         f.write('package\tindex\tstage\tdm_ctl_sha16\tsource\n')
         for r in rows: f.write('\t'.join(map(str, r)) + '\n')
     # Hand-written facts the machine code cannot give (the profile's shader_facts_manual.tsv, same row format) are merged over the generated ones, so the table stays reproducible
