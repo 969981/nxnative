@@ -74,6 +74,16 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Fix:** views are now also kept by texture serial and view parameters (4 per texture), checked against the current base texture on each hit, and dropped when the texture or its pool is finalized; a registration identical to what the ID holds keeps its view and the registration generation (`vc_get` in `nvn_mtl.m`).
 - **Found on:** [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md): 2,036 views were made in a 15-minute Mac battle run, 211 million reused; the replay before the cutscene went from 14.3 to 10.8 ms a frame.
 
+### Texture views re-made for finalized textures every submission
+
+- **Symptom:** `newTextureViewWithPixelFormat` stays a large share of the submit thread although the view cache hits. Ocarina of Time (Switch 2) made about 330 views a frame in Kokiri Forest, about 310 of them for the same textures again.
+- **Cause:** the view cache ([Texture views cached by texture and view parameters](#texture-views-cached-by-texture-and-view-parameters)) kept views only for live textures. A texture the game has finalized while one of its IDs is still registered resolves through `g_ghost`, and `vc_set_for` refused its set because nothing dropped it later. So every submission that read the ID made a transient view, released at the submission's end (`treg_finish_submission`), and the next submission made it again.
+- **Fix:** a finalized texture that `g_ghost` still holds keeps its view set, marked as a finalized texture's. At the first commit of each frame, beside the owner's eviction of idle ghost entries (`own_ghost_trim`), `vc_ghost_sweep` drops the sets of the serials `g_ghost` has let go: the eviction runs under `g_smu`, which can't take `g_rmu`, so it can't drop them itself. The checks look at the ghost table without counting as a use (`own_ghost_has`), so a kept view doesn't keep its texture in the table. The views hold the texture only as long as `g_ghost` already does, plus up to a frame. A texture buffer's 2D rows (`tbuf_as_2d`) stay out of these sets: a finalized texture's rows are kept by the memory they view (`g_tb2_gone`), which other textures' descriptors over that memory share. `DM_NVN_VC_KEEP` (default 1) turns it off with 0 and alternates it with the `DM_AB` phases with `ab`.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md). In-run A/B on its Kokiri Forest route (M2 Air, 20 pairs; measured in PR #2482 on a line before the ghost table was kept by use, PR #2389, and before the sweep moved to the commit):
+  - views made 330–347 → 38 a frame, none of them evictions;
+  - submit thread −1.72 M cycles a frame (−6 %), −5.4 M instructions;
+  - frame time within noise, because the GPU was the limit.
+
 ### Compatible views for a mismatched declared texture type
 
 - **Symptom:** daylight scenes washed out to white (every read of a texture returned one fixed value); `texture type mismatch` red lines, among them `declares slot … as Metal type 6, texture ID … is type 5` (a cube in a cube array slot).
@@ -286,6 +296,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Cause:** the translator drops TEX's LOD clamp and its residency predicate, so streamed textures were sampled at levels the game had not mapped yet.
 - **Fix:** a sparse texture is bound as a view starting at its first level whose pages, and those of every smaller level, are all mapped (`sparse_view` in `nvn_mtl.m`). That samples exactly as a minimum LOD would; the view follows each upload.
 - **Found on:** [Monster Hunter Rise](../../dm/games/0100B04011742000/README.md).
+
+### Texture views of a sparse texture bound from a later level
+
+- **Symptom:** `[RED] texture view id … starts at mip 2 beyond 1 levels` (or mip 1), once per run, for a streamed texture; views from level 1 of such a texture read the level after it.
+- **Cause:** a sparse texture is bound as the view of its levels from the first mapped one on ([Sparse textures bound from their first mapped level](#sparse-textures-bound-from-their-first-mapped-level)), so its host texture's level 0 is NVN level `vbase`. A texture view's levels count from NVN's level 0, and `tex_by_id` took them as the host texture's: a view from a level past the host texture's levels was left out (an empty slot), and one from an earlier level read a smaller one. Resident Evil 4 samples its streamed 512x512 and 1024x1024 textures, with only their two or three smallest levels mapped as the title loads, through views of levels 1 + 0 and 2 + 0 (30 such views at frame 1530, all of them sparse).
+- **Fix:** `tex_by_id` counts the view's levels from NVN's level 0 (`tex_level_shift`) and samples levels finer than the first mapped one from it, as the texture's own binding does.
+- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_sparse_pool_cache`: a three-level sparse texture with level 0 unmapped, read on the GPU through views from levels 1, 2 and 0. Without the fix the first two fail (the level 1 view reads level 2, the level 2 view the dummy). Resident Evil 4's opening to the forest path on the Mac (Apple M6, 2026-11-13): no such line.
+- **Found on:** [Resident Evil 4](../../dm/games/0400569027BF4000/README.md).
 
 ### Sampler reduction (min / max)
 
@@ -1263,6 +1281,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **See also:** [Metal's build folders left by pipeline archive flushes](shaders.md#metals-build-folders-left-by-pipeline-archive-flushes): the folders stay on the Mac; they take disk space but do not fill later runs' stores, each period making a new one.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md) on an M3 Pro.
 
+### A pipeline compile crashes while an archive period is written
+
+- **Symptom:** the pipeline prebuild (`DM_PSO_PREBUILD=tool`, the NSP script's `[RED] dmhost exit code -11`), or a run that captures pipelines, dies with SIGSEGV and no `CRASH` line of its own. macOS's crash report has `objc_msgSend` ← `MultiLevelAirntBinaryCache::getElementAtDestination` ← `-[MTLCompiler compileFunctionRequestInternal:…]` ← `arch_capture`, and a thread on the `MTLBinaryArchive_Serialize` queue in `airntSerializeToURL` ← `arch_write_file`.
+- **Cause:** in Metal. Serializing a flush period's archive frees entries of Metal's compiled-binary cache that a compile under way through another compiler (the next period's, or the plain one) still reads. Each of the three crashes had a serialization under way; the in-game prebuild that survived four writes was luck. A write also ran 2 to 5 times longer while 14 compiles went on beside it (142, 85 and 62 s for about 1,000 bases, against 25 to 29 s).
+- **Fix:** a workaround for Metal's race, `ser_begin` / `ser_compile_begin` in `nvn_mtl.m`: a serialization waits for the compiles under way and holds new ones back until it is written, the writer first. It waits at most 2 s (`SER_WAIT_MS`) for those under way: a compile that does not return must not stop every later one behind the waiting write (`t_pso_stall`'s held compile), so the write then goes ahead beside it, with a line in the log. Every compile of the archive's paths (`arch_capture`, `arch_capture_cs`, captured or plain) goes through it. A compile held back waits for one write, which in play is a period of the bases since the last flush. The write's log line counts the compiles held back and their time.
+- **Check:** Super Mario Party's prebuild of 39,111 pairs, which had crashed three times out of three on an M4 Pro (macOS 27.2) after 4,000 to 22,000 pairs, ran through twice: 39,111 bases in 867 and 773 s, 21 files each, the writes 7 to 52 s for about 2,000 bases. The writes held the 14 workers' compiles back for 5,582 and 3,965 s of their time in all: 45 and 51 pairs a second against about 60 before (the crashed run's pace up to 22,000), 15 to 25% slower, the price of not crashing. The 2 s wait never ran out.
+- **Found on:** Super Mario Party (`010036B0034E4000`, no profile yet), [#2513](https://github.com/seedds/nxnative/issues/2513); one crash report of another prebuild the same day had the same two threads.
+
 ### A cold start leaves a file per timer flush, and the next start compacts them all
 
 - **Symptom:** the start after a cold start spends minutes in the prepare step ("Preparing shaders"), with MTLCompilerService at 700-980% CPU, yet the log says no base was compiled: `pipeline prepare: 30838 lines (…) in 761.61 s on 10 workers before the first frame, progress screen shown; bases 0 compiled, 8608 from the archive, 637 reused`, then `pipeline archive compacted: 80 files of bases with a vertex layout gave 8859 bases to the files just written and were removed` ([issue #1747](https://github.com/seedds/nxnative/issues/1747): a cold start of 457 s, then a warm one of 309 s with 0 compiled).
@@ -1324,10 +1350,11 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 - **Symptom:** a Switch 2 game calls `nvnCommandBufferEvaluateDlss` and its builder functions, which the host did not have.
 - **Cause:** NVN2 has DLSS as a part of the API, a neural network that runs on NVIDIA's GPU, with no counterpart on the Mac.
-- **Fix:** `hle_nvn.c` takes the builder, the network and the parameters (the network's texture IDs and storage are the driver's own needs and are dropped), and answers `GetOptimalSettings` from the method (0: 2x, 1: 3x, 2: 1x). The replay's `OP_DLSS` runs MetalFX's temporal scaler (`dlss_eval`, `nvn_mtl.m`) over colour, depth and motion vectors, with the jitter and a history reset, falling back to a bilinear draw when there is no scaler. This replaces the upscaler, so the picture is close to the game's, not the same.
+- **Fix:** `hle_nvn.c` takes the builder, the network and the parameters (the network's texture IDs and storage are the driver's own needs and are dropped), and answers `GetOptimalSettings` with the optimal input from the method (0: 2x, 1: 3x, 2: 1x) and a range of inputs from a third of the output to the output (see Input range below). The replay's `OP_DLSS` runs MetalFX's temporal scaler (`dlss_eval`, `nvn_mtl.m`) over colour, depth and motion vectors, with the jitter and a history reset, falling back to a bilinear draw when there is no scaler. This replaces the upscaler, so the picture is close to the game's, not the same.
 - **Encoding thread:** with `DM_NVN_ENC_THREAD` (the iOS default) the replay's command buffer is the recording's stand-in, which has none of MetalFX's calls: the host stopped at the first evaluation (`deferred encoding: DmRecCB has no stand-in for -useResidencySet:`). The scaler's state and its encode are a block run on the encoding thread with the real command buffer (`rec_cb_block` in `nvn_rec.h`), as for [a game's own upscaler](#a-games-own-upscaler-drawn-by-metalfx). Check: `make -C dm/gfx/tests GAME=040074A01BF12000 check_t_dlss_mfx` (two evaluations through one scaler in a submission, the thread off and on). Not run on a game with the thread.
+- **Input range:** `GetOptimalSettings` returns the optimal input size, then the smallest and the largest input the network takes (not NGX's order, which has the largest first). A game may render at another size in that range and evaluates only inside it: Xenoblade Chronicles 2's Switch 2 program stores the fourth and fifth arguments as its lower bound and the sixth and seventh as its upper one, and its evaluation (`main+0x8ee0e0`) returns before `nvnCommandBufferEvaluateDlss` unless lower <= input <= upper. It renders 1024x576 into its 1536x864 network (method 0); while the host answered one size per method (min = max = 768x432), DLSS never ran, the game's own upscaler after it read an output nothing wrote, and every 3D frame reached the window black. The order rests on that one game: Fire Emblem Fortune's Weave stores the four values (`main+0x1913cfc`) but its evaluation (`main+0xb70f00`) checks no bound, and Donkey Kong Bananza, Switch Sports Resort, Pokopia, Resident Evil 4 and PRAGMATA look the function up without calling it. The range's values are this host's choice from DLSS's modes, not read from NVIDIA's driver. A game with a dynamic resolution renders a new size into the same textures as often as each frame, so `dlss_scaler_for` keys a scaler by the textures' sizes, not the input's: the scaler's input is the textures' common size, its content scale runs from that size's up to the device's most (3x on the M6 tested), and each evaluation sets its content size. Keyed by the input's size, each new size made a scaler again (a Metal compile) and reset its history. Check: `check_t_dlss_mfx` runs a 1024x576 → 1536x864 evaluation, then 768x432 in the same textures through the same scaler.
 - **Open:** the jitter's sign has not been checked and the bias mask is only logged; no ghosting has been seen.
-- **Found on:** [Fire Emblem Fortune's Weave](../../dm/games/04007EF01F8AE000/README.md): `gfxa::TaskDLSS`, 1024x576 to 2048x1152.
+- **Found on:** [Fire Emblem Fortune's Weave](../../dm/games/04007EF01F8AE000/README.md): `gfxa::TaskDLSS`, 1024x576 to 2048x1152. Xenoblade Chronicles 2, Nintendo Switch 2 Edition (`0400E95004038001`): the input range.
 
 ### The DLSS network resized
 
@@ -1428,7 +1455,7 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Symptom:** `stage 0 cb5 has no uniform buffer bound` (or another stage and slot, such as `stage 0 cb0`), once per run.
 - **Cause:** the argument buffer kept a null pointer for the unbound slot. The game draws with nothing bound there; the host misses no bind. What the Switch reads from an unbound slot is not known.
 - **Fix:** the slot now reads the all-zero bank, as an unbound texture slot reads the zero texture.
-- **Found on:** [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) (at the title); [Batman: Arkham Knight](../../dm/games/0100ACD0163D0000/README.md#files-and-shaders) (`stage 0 cb0`, at boot: the first command buffer draws before the game has bound any uniform buffer).
+- **Found on:** [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) (at the title); [Batman: Arkham Knight](../../dm/games/0100ACD0163D0000/README.md#files-and-shaders) (`stage 0 cb0`, at boot: the first command buffer draws before the game has bound any uniform buffer); [Resident Evil 4](../../dm/games/0400569027BF4000/README.md) (`stage 5 cb1`, frame 0).
 - **Check:** a pass dump of the frame (`DM_NVN_PASSDUMP=<frame>`, frame 0 for the boot) shows the draw (`j` line) and its stage's `K` line with no `B … cb` line, and the frame's `[nvn]` call counts show whether the game called `CommandBufferBindUniformBuffer` at all.
 
 ### Compute dispatches share the copy encoder
@@ -1675,8 +1702,23 @@ The Vulkan layer (`dm/gfx/vk/hle_vk.m`) was written for Hades; Super Mario Galax
 - Dynamic stencil state:
   - the reference is the encoder's;
   - the compare and write masks belong to a Metal depth-stencil state, so the pipeline keeps its depth-stencil description and builds one state per set of masks, cached (`C_STENCIL`).
-- A dynamic line width is ignored: Metal draws 1-pixel lines.
+- A dynamic line width is ignored: Metal draws 1-pixel lines. NVN's is drawn: [Lines wider than a pixel](#lines-wider-than-a-pixel).
 - **Found on:** [Super Mario 64 (Super Mario 3D All-Stars)](../../dm/games/010049900F546001/README.md), [Super Mario Sunshine (Super Mario 3D All-Stars)](../../dm/games/010049900F546002/README.md).
+
+### Lines wider than a pixel
+
+- **Symptom:** lines a game draws with `SetLineWidth` above 1 are hairlines: Mario Golf: Super Rush's aiming grid at the tee (width 4 and 5) and its putting grid, whose moving dashes show a green's slope, can hardly be seen. The host logged `SetLineWidth 4.00: Metal has only 1-pixel lines`.
+- **Cause:** Metal draws lines 1 pixel wide and has no line width; the host dropped the width.
+- **Fix:** `SetLineWidth` is recorded (`OP_LINE_WIDTH`) and kept in the replay's state. A draw of lines, a line loop or a line strip whose width rounds to 2 or more is drawn as a quad per segment (`nvn_wline.inc`), as OpenGL draws a non-antialiased wide line and as Maxwell does: a parallelogram w pixels across the segment's minor axis in window space, its ends on the major axis, so segments meet without gaps or overlap.
+  - It is the game's draw itself, in its own render pass, with the vertex shader's wide-line entry (`dmsh_pull.py`, `<entry>_wl`, in the pulling library) and 6 vertices a segment. Each vertex finds its segment's two endpoints from its vertex ID and a line block: their places by the primitive (lines, strip, loop), their vertex IDs from the first vertex, or from the index buffer, read on the GPU, plus the base vertex.
+  - It runs the shader's body, as a function, for both endpoints, keeps its own endpoint's outputs and moves its position by half the width, scaled by its w, so the width holds wherever the clipper cuts the quad.
+  - With multisampling on (a pass of more than one sample, the multisample state enabling it), a segment is instead the rectangle OpenGL draws then: w pixels across the segment, as long as it.
+  - The segment is clipped first, to w > 0 and to the near plane when depth clipping is on, its outputs interpolated as the clipper would: with a corner behind the eye, the offsets do not combine convexly and the quad spilled past the line (`t_wline.m`).
+  - The fragment shader, blending, depth and stencil are the draw's own; culling is off and the polygon offset is the one enabled for lines. A blended line is as heavy as one stroke.
+  - Indirect arguments are read on the CPU, as the geometry path reads them. A restart index drops the segments it touches: a strip breaks there as OpenGL's does, a line list keeps its pairs (OpenGL starts a new pair after it), and an indexed line loop with restart on stays 1 pixel wide.
+  - Stays 1 pixel wide, with `[RED] wide line … drawn 1 pixel wide: <reason>`: a vertex shader without the entry (no vertex inputs, or a parameter or output the entry cannot pass on). Programs with a geometry or tessellation stage, transform feedback or adjacency keep their own paths, 1 pixel wide. The width is capped at 64. `DM_NVN_LINE_WIDTH=0` draws every line 1 pixel wide.
+  - The body runs twice a corner, 12 times a segment, so a vertex shader with stores would run them that often; no line-drawing shader seen has any.
+- **Found on:** [Mario Golf: Super Rush](../../dm/games/0100C9C00E25C000/README.md): the tee's aiming grid and a green's putting grid, 480 segments a draw (PR #2352 recorded the width and drew the lines as shifted strokes).
 
 ### What a game tears down that it should not
 
