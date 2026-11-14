@@ -39,6 +39,24 @@ class Corpus(unittest.TestCase):
         self.assertEqual({p.name for p in fuzzlib.CORPUS.iterdir() if p.is_dir()} - set(HARNESSES), set(), 'a corpus folder without a harness')
 
 
+
+
+class Pacx403Bounds(unittest.TestCase):
+    """Malformed PACx 403 root chunk tables must use the declared [RED] rejection."""
+
+    def test_truncated_chunk_table_does_not_raise_struct_error(self):
+        import struct
+        data = bytearray(0x36)
+        data[:8] = b'PACx403L'
+        struct.pack_into('<III', data, 0x10, len(data), 0, 0)
+        struct.pack_into('<II', data, 0x20, 0, 20)  # claims a larger table than the file has
+        struct.pack_into('<I', data, 0x30, 2)
+        with self.assertRaises(SystemExit) as err:
+            harness('shader_split').ss.scan_blob(bytes(data), '/truncated-pacx', [])
+        self.assertIn('PACx 403 root chunk table', str(err.exception))
+        self.assertTrue(str(err.exception).startswith('[RED] '))
+
+
 def add(h, path):
     def test(self): replay(self, h, path.read_bytes())
     if path.name in OPEN[h]: test = unittest.expectedFailure(test)   # an open finding (known.tsv): fails until the parser is fixed

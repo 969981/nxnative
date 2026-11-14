@@ -562,10 +562,14 @@ def pacx4_parts(d, label):
     names a shader type is opened: decompressed whole, the game's archives give 15.6 GB, and NeedleShader.pac is the only one with a Needle container or a control section in it.
     → (name, bytes) of the root and of each block"""
     roff, rstored, rlen = struct.unpack_from('<III', span(d, 0x10, 12, f'{label}: PACx 403 header'))
-    deps, ctab = struct.unpack_from('<II', d, 0x20)
-    n = struct.unpack_from('<I', span(d, 0x30 + deps, 4, f'{label}: PACx 403 root chunk table'))[0]
+    deps, ctab = field(d, '<II', 0x20, f'{label}: PACx 403 header')
+    # The declared chunk-table size must fit the *actual* input, not just
+    # the count inside the table. Fuzzed/truncated PACx files can claim a
+    # larger ctab and otherwise trigger struct.error in the chunk pairs.
+    table = span(d, 0x30 + deps, ctab, f'{label}: PACx 403 root chunk table')
+    n = field(table, '<I', 0, f'{label}: PACx 403 root chunk count')[0]
     if not n or 4 + 8 * n > ctab: red(f'{label}: PACx 403 root chunk count {n} in a table of {ctab:#x} bytes')
-    chunks = [struct.unpack_from('<II', d, 0x34 + deps + 8 * i) for i in range(n)]
+    chunks = [field(table, '<II', 4 + 8 * i, f'{label}: PACx 403 root chunk {i}') for i in range(n)]
     if sum(c for c, _ in chunks) != rstored: red(f'{label}: the PACx 403 root chunks do not add up to its stored length {rstored:#x}')
     root = pacx4_unchunk(d, roff, chunks, rlen, f'{label}: PACx 403 root')
     if root[:8] != PACX4_ROOT: red(f'{label}: the PACx 403 root is not a PACx 402 archive')
