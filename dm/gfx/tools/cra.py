@@ -288,7 +288,6 @@ def narc_members(d, where='NARC'):
         out.append(d[data + a:data + b])
     return out
 
-
 def lz_undo(d, at):   # kinds 0x50 and 0x60 (nro0+0x1237f04): flag bytes, each negated and read from its high bit (1 a match, 0 a literal); a flag byte 0 is 8 literals; a distance 0 ends
     out = bytearray(); n = len(d)
     while at < n:
