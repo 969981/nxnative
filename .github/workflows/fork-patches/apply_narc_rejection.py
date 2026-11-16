@@ -64,11 +64,11 @@ def overlay(path, data):
     if path == "dm/gfx/tools/cra.py":
         # Pinned, reviewed upstream rewrite of narc_members. Preserve the fork's
         # stricter section-table/GMIF checks without replacing unrelated changes.
-        obj = b"blob " + str(len(data)).encode() + b"\\0" + data
+        obj = b"blob " + str(len(data)).encode() + b"\0" + data
         upstream_blob = hashlib.sha1(obj).hexdigest()
         if upstream_blob == "66e625adb0bdd732cf9ef6c137a70710d8fc1066":
             start = data.index(b"def narc_members(d, where='NARC'):")
-            end = data.index(b"\\ndef ", start + 1)
+            end = data.index(b"\ndef ", start + 1)
             return data[:start] + PATCHES[path][0][1].encode() + data[end:]
     if path == "dm/ios/tools/gen_build.py":
         # Upstream now queries the actual iOS SDK and excludes every framework
