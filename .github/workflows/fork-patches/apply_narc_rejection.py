@@ -6,6 +6,7 @@ file. Unexpected local edits or upstream refactors cause a hard failure instead
 of silently losing local patches.
 """
 from pathlib import Path
+import hashlib
 import subprocess
 import sys
 
@@ -46,6 +47,29 @@ def source(ref, path):
 
 
 def overlay(path, data):
+    if path == "dm/gfx/tools/shader_split.py":
+        # The upstream scanner now catches both the archive reader's exception and
+        # the member unpacker's exception, preserving the member path. This fully
+        # supersedes our original one-line loop patch. Require all invariants.
+        verified = (
+            b"try: members = cra.narc_members(d, label)",
+            b"except cra.Error as e: red(str(e))",
+            b"for i, m in enumerate(members):",
+            b"try: unpacked = cra.undo(m)",
+            b"except cra.Error as e: red(f'{where}: {e}')",
+            b"scan_blob(unpacked, where, out, depth + 1)",
+        )
+        if all(data.count(part) == 1 for part in verified):
+            return data
+    if path == "dm/gfx/tools/cra.py":
+        # Pinned, reviewed upstream rewrite of narc_members. Preserve the fork's
+        # stricter section-table/GMIF checks without replacing unrelated changes.
+        obj = b"blob " + str(len(data)).encode() + b"\\0" + data
+        upstream_blob = hashlib.sha1(obj).hexdigest()
+        if upstream_blob == "66e625adb0bdd732cf9ef6c137a70710d8fc1066":
+            start = data.index(b"def narc_members(d, where='NARC'):")
+            end = data.index(b"\\ndef ", start + 1)
+            return data[:start] + PATCHES[path][0][1].encode() + data[end:]
     if path == "dm/ios/tools/gen_build.py":
         # Upstream now queries the actual iOS SDK and excludes every framework
         # absent from it. That supersedes our old hard-coded macOS-only list.
