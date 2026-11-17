@@ -1,19 +1,12 @@
 name: Sync nxnative upstream and publish source release
 
 on:
-  schedule:
-    - cron: '*/10 * * * *'
   workflow_dispatch:
     inputs:
       force_publish:
         description: Repackage and publish the currently tracked upstream revision
         type: boolean
         default: true
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/upstream-sync-release.yml'
-      - '.github/workflows/fork-patches/apply_narc_rejection.py'
 
 permissions:
   contents: read
