@@ -592,15 +592,16 @@ def pacx4_parts(d, label):
     names a shader type is opened: decompressed whole, the game's archives give 15.6 GB, and NeedleShader.pac is the only one with a Needle container or a control section in it.
     → (name, bytes) of the root and of each block"""
     roff, rstored, rlen = struct.unpack_from('<III', span(d, 0x10, 12, f'{label}: PACx 403 header'))
-    deps, ctab = struct.unpack_from('<II', d, 0x20)
-    n = struct.unpack_from('<I', span(d, 0x30 + deps, 4, f'{label}: PACx 403 root chunk table'))[0]
+    deps, ctab = field(d, '<II', 0x20, f'{label}: PACx 403 header')
+    n = field(d, '<I', 0x30 + deps, f'{label}: PACx 403 root chunk table')[0]
     if not n or 4 + 8 * n > ctab: red(f'{label}: PACx 403 root chunk count {n} in a table of {ctab:#x} bytes')
-    chunks = [struct.unpack_from('<II', d, 0x34 + deps + 8 * i) for i in range(n)]
+    chunk_data = span(d, 0x34 + deps, 8 * n, f'{label}: PACx 403 root chunk entries')
+    chunks = [struct.unpack_from('<II', chunk_data, 8 * i) for i in range(n)]
     if sum(c for c, _ in chunks) != rstored: red(f'{label}: the PACx 403 root chunks do not add up to its stored length {rstored:#x}')
     root = pacx4_unchunk(d, roff, chunks, rlen, f'{label}: PACx 403 root')
     if root[:8] != PACX4_ROOT: red(f'{label}: the PACx 403 root is not a PACx 402 archive')
     if b'Shader' not in root: return []   # the type tree names no shader type (VertexShader, PixelShader, ComputeShader in NeedleShader.pac)
-    trees, info = struct.unpack_from('<II', root, 0x10)
+    trees, info = field(root, '<II', 0x10, f'{label}: PACx 402 root header')
     out = [('root', root)]
     if not info: return out
     nb, tab = struct.unpack_from('<QQ', span(root, 0x30 + trees, 16, f'{label}: PACx 403 block table'))
